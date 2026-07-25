@@ -140,6 +140,23 @@ class TrackTagger(ABC):
         """Write MusicBrainz metadata (TPUB, TSRC, TLEN, TXXX) after an AcoustID match."""
 
     @abstractmethod
+    def write_fingerprint_tags(
+        self,
+        file_path: Path,
+        *,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        cover_bytes: bytes | None = None,
+        artist_image: bytes | None = None,
+    ) -> None:
+        """Write all post-fingerprint tags in a single save.
+
+        Combines AcoustID, MusicBrainz, cover art, and artist image
+        into one mutagen save call to reduce disk I/O.
+        """
+
+    @abstractmethod
     def write_lyrics(self, file_path: Path, lyrics: str) -> None:
         """Write lyrics text into the USLT frame."""
 
@@ -389,6 +406,75 @@ class ID3Tagger(TrackTagger):
         except Exception as exc:
             raise TaggingError(f"failed to save MB metadata to {file_path}: {exc}") from exc
 
+    def write_fingerprint_tags(
+        self,
+        file_path: Path,
+        *,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        cover_bytes: bytes | None = None,
+        artist_image: bytes | None = None,
+    ) -> None:
+        try:
+            audio = _load_or_create(file_path)
+        except Exception as exc:
+            raise TaggingError(f"failed to load {file_path} for fingerprint tags: {exc}") from exc
+
+        # AcoustID
+        audio.delall("TXXX:MusicBrainz Recording Id")
+        audio.delall("TXXX:AcoustID Score")
+        if recording_id:
+            audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=recording_id))
+        audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
+
+        if mb_data is not None:
+            audio.delall("TPUB")
+            audio.delall("TSRC")
+            audio.delall("TLEN")
+            audio.delall("TXXX:MusicBrainz Release Id")
+            audio.delall("TXXX:MusicBrainz Release Group Type")
+            audio.delall("TXXX:MusicBrainz Genres")
+            audio.delall("TXXX:CatalogNumber")
+            audio.delall("TXXX:Barcode")
+            if mb_data.release_label:
+                audio.add(TPUB(encoding=3, text=mb_data.release_label))
+            if mb_data.isrcs:
+                audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
+            if mb_data.length_ms is not None:
+                audio.add(TLEN(encoding=3, text=str(mb_data.length_ms)))
+            if mb_data.release_id:
+                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Id", text=mb_data.release_id))
+            if mb_data.release_group_type:
+                audio.add(
+                    TXXX(encoding=3, desc="MusicBrainz Release Group Type", text=mb_data.release_group_type)
+                )
+            if mb_data.genres:
+                audio.add(TXXX(encoding=3, desc="MusicBrainz Genres", text=", ".join(mb_data.genres)))
+            if mb_data.release_catalog_no:
+                audio.add(TXXX(encoding=3, desc="CatalogNumber", text=mb_data.release_catalog_no))
+            if mb_data.barcode:
+                audio.add(TXXX(encoding=3, desc="Barcode", text=mb_data.barcode))
+
+        if cover_bytes is not None:
+            audio.delall("APIC:Cover")
+            scaled = _scale_cover(cover_bytes)
+            if scaled is not None:
+                scaled_data, mime = scaled
+                audio.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=scaled_data))
+
+        if artist_image is not None:
+            audio.delall("APIC:Performer")
+            scaled = _scale_cover(artist_image)
+            if scaled is not None:
+                scaled_data, mime = scaled
+                audio.add(APIC(encoding=3, mime=mime, type=8, desc="Performer", data=scaled_data))
+
+        try:
+            audio.save(file_path, v2_version=3, v1=2)
+        except Exception as exc:
+            raise TaggingError(f"failed to save fingerprint tags to {file_path}: {exc}") from exc
+
     def write_lyrics(self, file_path: Path, lyrics: str) -> None:
         try:
             audio = _load_or_create(file_path)
@@ -430,6 +516,18 @@ class NullTagger(TrackTagger):
         return None
 
     def update_musicbrainz_metadata(self, file_path: Path, mb_data: MusicBrainzData) -> None:
+        return None
+
+    def write_fingerprint_tags(
+        self,
+        file_path: Path,
+        *,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        cover_bytes: bytes | None = None,
+        artist_image: bytes | None = None,
+    ) -> None:
         return None
 
     def write_lyrics(self, file_path: Path, lyrics: str) -> None:

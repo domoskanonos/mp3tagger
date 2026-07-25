@@ -505,6 +505,21 @@ async def fingerprint_song(
         _release_lock(file_path, locks)
 
 
+async def _fetch_artist_image(
+    popularity_provider: PopularityProvider,
+    artist: str,
+    station_name: str,
+) -> bytes | None:
+    """Helper to fetch Deezer artist image with logging."""
+    try:
+        img = await popularity_provider.fetch_artist_image(artist)
+        if img is not None:
+            return img
+    except Exception as exc:
+        logger.debug("[%s] artist image fetch failed: %s", station_name, exc)
+    return None
+
+
 async def apply_fingerprint_match(
     *,
     recording_id: str,
@@ -556,10 +571,6 @@ async def apply_fingerprint_match(
     logger.info("[%s] AcoustID match applied: %s", station_name, new_path.name)
 
     try:
-        tagger.update_acoustid(new_path, recording_id, score)
-    except Exception as exc:
-        logger.debug("[%s] acoustid tag update: %s", station_name, exc)
-    try:
         await repository.update_file_path(station_name, stream_title, str(new_path))
     except Exception as exc:
         logger.debug("[%s] db update_file_path: %s", station_name, exc)
@@ -573,80 +584,53 @@ async def apply_fingerprint_match(
     except Exception as exc:
         logger.debug("[%s] db update_fingerprint: %s", station_name, exc)
 
+    # Parallel API calls: CAA cover, MB metadata, Deezer artist image
+    cover_bytes: bytes | None = None
+    mb_data: MusicBrainzData | None = None
+    artist_img: bytes | None = None
     if recording_id and cover_provider is not None:
-        try:
-            cover_bytes = await cover_provider.fetch_cover_by_recording_id(recording_id)
-        except Exception as exc:
-            logger.debug(
-                "[%s] Cover Art Archive lookup failed: %s",
-                station_name,
-                exc,
-            )
-            cover_bytes = None
-        if cover_bytes is not None:
+        async def _fetch_cover() -> bytes | None:
             try:
-                tagger.embed_cover(new_path, cover_bytes)
-                logger.info(
-                    "[%s] Embedded CAA cover: %s",
-                    station_name,
-                    new_path.name,
-                )
+                return await cover_provider.fetch_cover_by_recording_id(recording_id)
             except Exception as exc:
-                logger.debug(
-                    "[%s] embed CAA cover failed: %s",
-                    station_name,
-                    exc,
-                )
-        else:
-            logger.info(
-                "[%s] No CAA cover available for recording %s",
-                station_name,
-                recording_id,
-            )
+                logger.debug("[%s] CAA cover lookup failed: %s", station_name, exc)
+                return None
 
-        # Fetch MusicBrainz metadata (label, ISRC, length, release info)
-        try:
-            mb_data = await cover_provider.fetch_recording_data(recording_id)
-        except Exception as exc:
-            logger.debug(
-                "[%s] MusicBrainz recording data lookup failed: %s",
-                station_name,
-                exc,
-            )
-            mb_data = None
-        if mb_data is not None:
+        async def _fetch_mb() -> MusicBrainzData | None:
             try:
-                tagger.update_musicbrainz_metadata(new_path, mb_data)
-                if mb_data.release_label:
-                    logger.info(
-                        "[%s] MB label: %s",
-                        station_name,
-                        mb_data.release_label,
-                    )
+                d = await cover_provider.fetch_recording_data(recording_id)
+                if d and d.release_label:
+                    logger.info("[%s] MB label: %s", station_name, d.release_label)
+                return d
             except Exception as exc:
-                logger.debug(
-                    "[%s] update_musicbrainz_metadata failed: %s",
-                    station_name,
-                    exc,
-                )
+                logger.debug("[%s] MB recording data lookup failed: %s", station_name, exc)
+                return None
 
-        # Fetch & embed artist portrait from Deezer
+        tasks = [_fetch_cover(), _fetch_mb()]
         if popularity_provider is not None and artist:
-            try:
-                img = await popularity_provider.fetch_artist_image(artist)
-                if img is not None:
-                    tagger.write_artist_image(new_path, img)
-                    logger.info(
-                        "[%s] Artist image embedded: %s",
-                        station_name,
-                        artist,
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "[%s] artist image fetch failed: %s",
-                    station_name,
-                    exc,
-                )
+            tasks.append(_fetch_artist_image(popularity_provider, artist, station_name))
+        results = await asyncio.gather(*tasks)
+        cover_bytes = results[0]
+        mb_data = results[1]
+        if len(results) > 2:
+            artist_img = results[2]
+
+    # Single bulk tag write
+    try:
+        tagger.write_fingerprint_tags(
+            new_path,
+            recording_id=recording_id,
+            score=score,
+            mb_data=mb_data,
+            cover_bytes=cover_bytes,
+            artist_image=artist_img,
+        )
+        if cover_bytes is not None:
+            logger.info("[%s] Embedded CAA cover: %s", station_name, new_path.name)
+        if artist_img is not None:
+            logger.info("[%s] Artist image embedded: %s", station_name, artist)
+    except Exception as exc:
+        logger.debug("[%s] bulk fingerprint tag write failed: %s", station_name, exc)
 
     if min_popularity_rank > 0 and popularity_provider is not None and (artist or title):
         deleted = await maybe_delete_obscure(

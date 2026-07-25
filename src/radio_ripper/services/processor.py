@@ -28,7 +28,6 @@ from radio_ripper.services.storage import (
     compute_file_path,
     read_acoustid_score,
     remove_empty_parents,
-    remux_mp3,
 )
 from radio_ripper.services.tagging import TrackTagger
 from radio_ripper.services.track_processing import (
@@ -120,12 +119,11 @@ class FileProcessor(BaseInboxProcessor):
             self._cleanup_file(work_path)
             return
 
-        # ── Remux + enrich (Tags von iTunes) in work_dir ──
+        # ── Enrich (Tags von iTunes) in work_dir ──
         stream_title = f"{result.artist} - {result.title}"
         track = TrackInfo.from_stream_title(stream_title)
         provenance = f"{self._name}/{self._name}"
 
-        remux_mp3(work_path)
         info = await enrich_and_file(
             work_path,
             track,
