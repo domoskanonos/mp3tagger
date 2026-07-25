@@ -1,0 +1,51 @@
+[project]
+name = "radio-ripper-tag"
+version = "2.1.0"
+description = "Webradio-Tagger — AcoustID-Fingerprinting, iTunes-Enrichment, ID3v2-Tagging"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Radio-Ripper Contributors" }]
+keywords = ["webradio", "tagging", "id3", "mp3", "acoustid", "fingerprint"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+dependencies = [
+    "httpx>=0.27.0",
+    "mutagen>=1.47.0",
+    "Pillow>=10.0.0",
+    "pydub>=0.25.1",
+    "pydantic>=2.7.0",
+    "pyacoustid>=1.2.0",
+]
+
+[project.scripts]
+radio-ripper = "radio_ripper.cli:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "respx>=0.23.1",
+]

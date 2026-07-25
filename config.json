@@ -1,0 +1,14 @@
+{
+  "destination": "/home/laptop/Musik",
+  "work_dir": "./work",
+  "log_level": "INFO",
+  "user_agent": "Radio-Ripper-Tag/2.0",
+  "acoustid_min_score": 0.85,
+  "min_popularity_rank": 100000,
+  "enable_coverartarchive": true,
+  "metadata_timeout": 8.0,
+  "cover_timeout": 15.0,
+  "min_file_size_bytes": 1024,
+  "min_duration_s": 30,
+  "overwrite_existing_files": false
+}
