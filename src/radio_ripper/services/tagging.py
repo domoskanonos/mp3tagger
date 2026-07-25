@@ -81,12 +81,12 @@ def _scale_cover(data: bytes) -> tuple[bytes, str] | None:
         long_side = max(w, h)
         if long_side < _MIN_COVER_PX:
             scale = _MIN_COVER_PX / long_side
-            img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)  # type: ignore[attr-defined]
+            img = img.resize((round(w * scale), round(h * scale)), Image.Resampling.LANCZOS)
             w, h = img.size
             long_side = max(w, h)
         if long_side > _MAX_COVER_PX:
             scale = _MAX_COVER_PX / long_side
-            img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)  # type: ignore[attr-defined]
+            img = img.resize((round(w * scale), round(h * scale)), Image.Resampling.LANCZOS)
         out = io.BytesIO()
         if mime == "image/jpeg":
             if img.mode not in ("RGB", "L"):
@@ -491,9 +491,7 @@ async def enrich_and_tag(
         tagger.write_full(file_path, track, info, cover, provenance, fallback_cover=fallback_cover)
     except Exception as exc:
         if logger:
-            logger.warning(
-                "[%s] tag-enrichment failed %s: %s", track.stream_title, file_path.name, exc
-            )
+            logger.warning("[%s] tag-enrichment failed %s: %s", track.stream_title, file_path.name, exc)
 
     return info
 

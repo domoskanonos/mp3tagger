@@ -1,0 +1,48 @@
+@startuml radio-ripper-tag Runtime: MP3-Tagging-Pipeline
+
+actor Betreiber
+participant CLI as "cli.py"
+participant Processor as "FileProcessor"
+participant FP as "FingerprintProvider"
+participant META as "MetadataProvider"
+participant TAG as "TrackTagger"
+participant STORE as "Storage"
+participant REPO as "TrackRepository"
+database FS as "Dateisystem"
+
+Betreiber -> CLI: radio-ripper --config config.json
+CLI -> CLI: parse_args, load_settings
+CLI -> CLI: configure_logging
+CLI -> Processor: start()
+
+loop Poll-Intervall
+    Processor -> Processor: _drain_inbox()
+    Processor -> FS: glob(*.mp3)
+    FS --> Processor: [file.mp3]
+
+    Processor -> Processor: rename → .processing
+
+    Processor -> FP: fingerprint(proc_path)
+    alt NonRetriableFingerprintError
+        Processor -> Processor: _cleanup_file()
+    else FingerprintError
+        Processor -> Processor: _move_to_temp()
+    else Kein Match
+        Processor -> Processor: _cleanup_file()
+    else Match gefunden
+        Processor -> Processor: rename → .untested.mp3
+        Processor -> Processor: remux_mp3()
+        Processor -> META: enrich_and_tag()
+        META -> META: iTunes-Suche
+        META --> Processor: EnrichedInfo
+        Processor -> TAG: write_full()
+        Processor -> TAG: embed_cover()
+        Processor -> FP: fingerprint_song()
+        FP -> FP: CAA-Cover
+        FP -> FP: Deezer-Popularität
+        FP -> FP: Cross-Station-Dedup
+        Processor -> FS: move → destination/
+    end
+end
+
+@enduml

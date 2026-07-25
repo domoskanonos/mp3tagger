@@ -117,9 +117,9 @@ class TestCoverArtArchiveProvider:
         release_id = "rel-999"
         cover_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 200
         with respx.mock:
-            respx.get(
-                f"{_MBZ_RECORDING_URL}{recording_id}", params__contains={"fmt": "json"}
-            ).respond(json={"releases": [{"id": release_id}]})
+            respx.get(f"{_MBZ_RECORDING_URL}{recording_id}", params__contains={"fmt": "json"}).respond(
+                json={"releases": [{"id": release_id}]}
+            )
             respx.get(f"{_CAA_FRONT_URL}{release_id}/front").respond(content=cover_bytes)
             result = await provider.fetch_cover_by_recording_id(recording_id)
         assert result == cover_bytes
@@ -134,9 +134,7 @@ class TestCoverArtArchiveProvider:
     async def test_mbz_api_error_returns_none(self, client: HttpxAsyncClient):
         provider = CoverArtArchiveProvider(client, timeout=5.0)
         with respx.mock:
-            respx.get(f"{_MBZ_RECORDING_URL}bad-id", params__contains={"fmt": "json"}).respond(
-                status_code=500
-            )
+            respx.get(f"{_MBZ_RECORDING_URL}bad-id", params__contains={"fmt": "json"}).respond(status_code=500)
             result = await provider.fetch_cover_by_recording_id("bad-id")
         assert result is None
         await client.aclose()
@@ -144,9 +142,7 @@ class TestCoverArtArchiveProvider:
     async def test_no_releases_returns_none(self, client: HttpxAsyncClient):
         provider = CoverArtArchiveProvider(client, timeout=5.0)
         with respx.mock:
-            respx.get(f"{_MBZ_RECORDING_URL}rec-456", params__contains={"fmt": "json"}).respond(
-                json={"releases": []}
-            )
+            respx.get(f"{_MBZ_RECORDING_URL}rec-456", params__contains={"fmt": "json"}).respond(json={"releases": []})
             result = await provider.fetch_cover_by_recording_id("rec-456")
         assert result is None
         await client.aclose()

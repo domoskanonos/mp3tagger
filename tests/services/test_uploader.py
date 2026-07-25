@@ -36,9 +36,7 @@ def _touch(path: Path) -> Path:
     return path
 
 
-def _stub_fingerprint(
-    result: FingerprintResult | None = None, *, fail: type[Exception] | None = None
-):
+def _stub_fingerprint(result: FingerprintResult | None = None, *, fail: type[Exception] | None = None):
     """Return a FingerprintProvider stub."""
     fp = MagicMock(spec=FingerprintProvider)
     if fail is not None:
@@ -81,9 +79,7 @@ class _TrackingRepo(TrackRepository):
     async def register(self, track: object, station_name: str) -> None:
         self.registered.append((station_name, str(track)))
 
-    async def update_enrichment(
-        self, station_name: str, stream_title: str, **kwargs: object
-    ) -> None:
+    async def update_enrichment(self, station_name: str, stream_title: str, **kwargs: object) -> None:
         import dataclasses
 
         valid = {f.name for f in dataclasses.fields(EnrichedInfo)}
@@ -214,7 +210,7 @@ class TestLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# _process_inbox — directory scan
+# _drain_inbox — directory scan
 # ---------------------------------------------------------------------------
 
 
@@ -230,7 +226,7 @@ class TestInboxScan:
             repository=_TrackingRepo(),
             tagger=_stub_tagger(),
         )
-        await u._process_inbox()  # must not raise
+        await u._drain_inbox()  # must not raise
 
     async def test_empty_inbox_is_safe(self, tmp_path: Path) -> None:
         s = _settings(tmp_path)
@@ -244,7 +240,7 @@ class TestInboxScan:
             repository=_TrackingRepo(),
             tagger=_stub_tagger(),
         )
-        await u._process_inbox()  # must not raise
+        await u._drain_inbox()  # must not raise
 
     async def test_only_mp3_files_processed(self, tmp_path: Path) -> None:
         s = _settings(tmp_path)
@@ -253,9 +249,7 @@ class TestInboxScan:
         _touch(s.mp3_inbox / "song.wav")
         _touch(s.mp3_inbox / "notes.md")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(
-            FingerprintResult(artist="A", title="B", score=0.9, recording_id="r1")
-        )
+        fp = _stub_fingerprint(FingerprintResult(artist="A", title="B", score=0.9, recording_id="r1"))
         u = Uploader(
             inbox=s.mp3_inbox,
             temp_dir=tmp_path / "temp",
@@ -265,7 +259,7 @@ class TestInboxScan:
             repository=repo,
             tagger=_stub_tagger(),
         )
-        await u._process_inbox()
+        await u._drain_inbox()
         # Only track.mp3 should have been fingerprinted
         assert len(repo.fingerprint_calls) == 1
         processing_file = s.mp3_inbox / "track.processing"
@@ -287,7 +281,7 @@ class TestInboxScan:
             repository=repo,
             tagger=_stub_tagger(),
         )
-        await u._process_inbox()
+        await u._drain_inbox()
         leftover = list(s.mp3_inbox.iterdir())
         assert len(leftover) == 0  # all processed (moved to temp)
 
@@ -303,9 +297,7 @@ class TestProcessOneMatch:
         mp3 = _touch(s.mp3_inbox / "track.mp3")
         repo = _TrackingRepo()
         fp = _stub_fingerprint(
-            FingerprintResult(
-                artist="Artist One", title="Song Two", score=0.95, recording_id="rec-abc"
-            )
+            FingerprintResult(artist="Artist One", title="Song Two", score=0.95, recording_id="rec-abc")
         )
         u = Uploader(
             inbox=s.mp3_inbox,
@@ -326,9 +318,7 @@ class TestProcessOneMatch:
         s = _settings(tmp_path)
         mp3 = _touch(s.mp3_inbox / "test.mp3")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(
-            FingerprintResult(artist="A", title="B", score=0.9, recording_id="rec-xyz")
-        )
+        fp = _stub_fingerprint(FingerprintResult(artist="A", title="B", score=0.9, recording_id="rec-xyz"))
         u = Uploader(
             inbox=s.mp3_inbox,
             temp_dir=tmp_path / "temp",
@@ -350,9 +340,7 @@ class TestProcessOneMatch:
         s = _settings(tmp_path)
         mp3 = _touch(s.mp3_inbox / "enriched.mp3")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(
-            FingerprintResult(artist="E", title="F", score=0.95, recording_id="rec-ef")
-        )
+        fp = _stub_fingerprint(FingerprintResult(artist="E", title="F", score=0.95, recording_id="rec-ef"))
         info = EnrichedInfo(album="Great Album", year="2024", genre="Rock", label="Big Label")
         u = Uploader(
             inbox=s.mp3_inbox,
@@ -377,9 +365,7 @@ class TestProcessOneMatch:
         mp3 = _touch(s.mp3_inbox / "album_track.mp3")
         repo = _TrackingRepo()
         fp = _stub_fingerprint(
-            FingerprintResult(
-                artist="AlbumArtist", title="AlbumSong", score=0.9, recording_id="r99"
-            )
+            FingerprintResult(artist="AlbumArtist", title="AlbumSong", score=0.9, recording_id="r99")
         )
         info = EnrichedInfo(album="MyAlbum")
         u = Uploader(
@@ -399,9 +385,7 @@ class TestProcessOneMatch:
         s = _settings(tmp_path)
         mp3 = _touch(s.mp3_inbox / "unenriched.mp3")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(
-            FingerprintResult(artist="U", title="V", score=0.8, recording_id="r-uv")
-        )
+        fp = _stub_fingerprint(FingerprintResult(artist="U", title="V", score=0.8, recording_id="r-uv"))
         u = Uploader(
             inbox=s.mp3_inbox,
             temp_dir=tmp_path / "temp",
@@ -421,9 +405,7 @@ class TestProcessOneMatch:
         _touch(existing)
         mp3 = _touch(s.mp3_inbox / "collision.mp3")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(
-            FingerprintResult(artist="Artist", title="Song", score=0.95, recording_id="r-c1")
-        )
+        fp = _stub_fingerprint(FingerprintResult(artist="Artist", title="Song", score=0.95, recording_id="r-c1"))
         u = Uploader(
             inbox=s.mp3_inbox,
             temp_dir=tmp_path / "temp",
@@ -435,17 +417,18 @@ class TestProcessOneMatch:
         )
         await u._process_one(mp3)
         assert existing.is_file()  # original still there
-        dest = s.destination / "Artist" / "Artist - Song (2).mp3"
-        assert dest.is_file(), f"Expected collision file at {dest}"
+        # new name has a timestamp suffix
+        files = list((s.destination / "Artist").iterdir())
+        assert len(files) == 2
+        collided = [f for f in files if f.name.startswith("Artist - Song_")]
+        assert len(collided) == 1, f"Expected a timestamp-suffixed file, got {files}"
 
     async def test_match_artist_title_special_chars_sanitized(self, tmp_path: Path) -> None:
         s = _settings(tmp_path)
         mp3 = _touch(s.mp3_inbox / "weird.mp3")
         repo = _TrackingRepo()
         fp = _stub_fingerprint(
-            FingerprintResult(
-                artist='Art"ist', title="Song: Title?", score=0.9, recording_id="r-spec"
-            )
+            FingerprintResult(artist='Art"ist', title="Song: Title?", score=0.9, recording_id="r-spec")
         )
         u = Uploader(
             inbox=s.mp3_inbox,
@@ -538,7 +521,7 @@ class TestProcessOneNoMatch:
             repository=repo,
             tagger=_stub_tagger(),
         )
-        await u._process_inbox()
+        await u._drain_inbox()
         assert (tmp_path / "temp" / "net_error.mp3").is_file()
 
     async def test_unexpected_exception_moves_to_temp(self, tmp_path: Path) -> None:
@@ -555,7 +538,7 @@ class TestProcessOneNoMatch:
             repository=repo,
             tagger=_stub_tagger(),
         )
-        await u._process_inbox()
+        await u._drain_inbox()
         assert (tmp_path / "temp" / "boom.mp3").is_file()
 
     async def test_enrichment_failure_still_files_to_dest(self, tmp_path: Path) -> None:
@@ -563,9 +546,7 @@ class TestProcessOneNoMatch:
         s = _settings(tmp_path)
         mp3 = _touch(s.mp3_inbox / "partial.mp3")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(
-            FingerprintResult(artist="P", title="Partial", score=0.9, recording_id="r-part")
-        )
+        fp = _stub_fingerprint(FingerprintResult(artist="P", title="Partial", score=0.9, recording_id="r-part"))
         # enrich disabled in settings so enrich_and_tag returns None
         u = Uploader(
             inbox=s.mp3_inbox,
@@ -643,9 +624,7 @@ class TestEnrichmentErrors:
         s = _settings(tmp_path)
         _touch(s.mp3_inbox / "bad_meta.mp3")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(
-            FingerprintResult(artist="Meta", title="Fail", score=0.9, recording_id="r-meta")
-        )
+        fp = _stub_fingerprint(FingerprintResult(artist="Meta", title="Fail", score=0.9, recording_id="r-meta"))
         mp = _stub_metadata(fail=RuntimeError)
         u = Uploader(
             inbox=s.mp3_inbox,
@@ -656,7 +635,7 @@ class TestEnrichmentErrors:
             repository=repo,
             tagger=_stub_tagger(),
         )
-        await u._process_inbox()
+        await u._drain_inbox()
         dest = s.destination / "Meta" / "Meta - Fail.mp3"
         assert dest.is_file(), "File must reach destination even when enrichment fails"
         assert len(repo.enrichment_calls) == 1  # pipeline always updates DB state
@@ -710,7 +689,7 @@ class TestPollingLoop:
         await u.start()
         await u.stop()
         _touch(s.mp3_inbox / "after_stop.mp3")
-        # After stop, _process_inbox should NOT be running
+        # After stop, _drain_inbox should NOT be running
         await asyncio.sleep(0.05)
         assert (s.mp3_inbox / "after_stop.mp3").is_file()
 

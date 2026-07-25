@@ -12,17 +12,16 @@ import contextlib
 import logging
 import shutil
 from pathlib import Path
-from typing import Any
 
-from radio_ripper.domain.models import EnrichedInfo, SavedTrack, TrackInfo
+from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, SavedTrack, TrackInfo
 from radio_ripper.infra.config import Settings
 from radio_ripper.services.fingerprint import (
     FingerprintError,
     FingerprintProvider,
     NonRetriableFingerprintError,
 )
-from radio_ripper.services.metadata import MetadataProvider
-from radio_ripper.services.popularity import maybe_delete_obscure
+from radio_ripper.services.metadata import CoverArtProvider, MetadataProvider
+from radio_ripper.services.popularity import PopularityProvider, maybe_delete_obscure
 from radio_ripper.services.repository import TrackRepository
 from radio_ripper.services.storage import remove_empty_parents, sanitize_filename
 from radio_ripper.services.tagging import TrackTagger, enrich_and_tag
@@ -296,11 +295,11 @@ async def fingerprint_song(
     fingerprint_provider: FingerprintProvider | None,
     repo: TrackRepository,
     tagger: TrackTagger,
-    cover_provider: Any | None = None,
-    popularity_provider: Any | None = None,
+    cover_provider: CoverArtProvider | None = None,
+    popularity_provider: PopularityProvider | None = None,
     file_locks: dict[Path, asyncio.Lock] | None = None,
     logger: logging.Logger = _LOGGER,
-    precomputed_result: Any | None = None,
+    precomputed_result: FingerprintResult | None = None,
 ) -> None:
     """Fingerprint a recorded file and apply the match result.
 
@@ -324,6 +323,7 @@ async def fingerprint_song(
     lock = _lock_for(file_path, locks)
     try:
         async with lock:
+            result: FingerprintResult | None
             if precomputed_result is not None:
                 result = precomputed_result
             else:
@@ -343,8 +343,7 @@ async def fingerprint_song(
                     return
                 except FingerprintError as exc:
                     logger.warning(
-                        "[%s] fingerprint infrastructure error for %s: %s "
-                        "(file kept as .untested.mp3 for retry)",
+                        "[%s] fingerprint infrastructure error for %s: %s (file kept as .untested.mp3 for retry)",
                         station_name,
                         file_path.name,
                         exc,
@@ -379,8 +378,7 @@ async def fingerprint_song(
                     )
                     if has_matched:
                         logger.info(
-                            "[%s] AcoustID unmatched, but a matched version"
-                            " already exists — discarding new: %s",
+                            "[%s] AcoustID unmatched, but a matched version already exists — discarding new: %s",
                             station_name,
                             file_path.name,
                         )
@@ -527,14 +525,14 @@ async def apply_fingerprint_match(
     file_path: Path,
     new_path: Path,
     tagger: TrackTagger,
-    cover_provider: Any | None,
+    cover_provider: CoverArtProvider | None,
     repository: TrackRepository,
     station_name: str,
     stream_title: str,
     logger: logging.Logger,
     artist: str = "",
     title: str = "",
-    popularity_provider: Any | None = None,
+    popularity_provider: PopularityProvider | None = None,
     min_popularity_rank: int = 0,
 ) -> Path | None:
     """Rename after AcoustID match, update ID3 tags + DB, fetch CAA cover.
@@ -550,8 +548,7 @@ async def apply_fingerprint_match(
     if file_path != new_path:
         if new_path.exists():
             logger.warning(
-                "[%s] Refuse to rename %s -> %s (target exists). "
-                "Keeping .untested.mp3 for manual review.",
+                "[%s] Refuse to rename %s -> %s (target exists). Keeping .untested.mp3 for manual review.",
                 station_name,
                 file_path.name,
                 new_path.name,

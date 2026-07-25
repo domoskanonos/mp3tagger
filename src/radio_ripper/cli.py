@@ -18,7 +18,7 @@ from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.infra.logging import configure_logging
 from radio_ripper.services.fingerprint import AcoustidFingerprintProvider, NullFingerprintProvider
 from radio_ripper.services.metadata import ITunesMetadataProvider
-from radio_ripper.services.popularity import DeezerPopularityChecker
+from radio_ripper.services.popularity import DeezerPopularityChecker, PopularityProvider
 from radio_ripper.services.processor import FileProcessor
 from radio_ripper.services.tagging import ID3Tagger
 
@@ -51,7 +51,7 @@ async def _run(settings: Settings, logger: logging.Logger) -> int:
     tagger = ID3Tagger()
     inbox = settings.mp3_inbox or settings.work_dir / "mp3_inbox"
 
-    popularity: DeezerPopularityChecker | None = None
+    popularity: PopularityProvider | None = None
     if settings.min_popularity_rank and settings.min_popularity_rank > 0:
         popularity = DeezerPopularityChecker(client)
 

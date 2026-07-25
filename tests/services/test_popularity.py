@@ -18,9 +18,7 @@ class _FakeClient:
         self._result = result
         self._raise_on_get_json = raise_on_get_json
 
-    async def get_json(
-        self, url: str, *, params: dict[str, Any] | None = None, timeout: float | None = None
-    ) -> Any:
+    async def get_json(self, url: str, *, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         if self._raise_on_get_json:
             raise RuntimeError("API unreachable")
         return self._result
@@ -265,9 +263,7 @@ class TestMaybeDeleteObscure:
         assert result is True
         assert not fp.exists()
 
-    async def test_debug_log_when_repo_remove_fails(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ):
+    async def test_debug_log_when_repo_remove_fails(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
         caplog.set_level(logging.DEBUG, logger="radio_ripper.popularity")
         provider = AsyncMock(spec=DeezerPopularityChecker)
         provider.get_rank.return_value = 10

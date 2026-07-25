@@ -47,9 +47,7 @@ class TestHttpxAsyncClient:
 
     async def test_stream_response_headers_populated(self, client: HttpxAsyncClient):
         with respx.mock:
-            respx.get("https://example.com/s").respond(
-                content=b"data", headers={"icy-metaint": "16000"}
-            )
+            respx.get("https://example.com/s").respond(content=b"data", headers={"icy-metaint": "16000"})
             async for _ in client.stream_binary("https://example.com/s"):
                 pass
         assert client.response_headers().get("icy-metaint") == "16000"

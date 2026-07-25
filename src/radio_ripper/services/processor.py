@@ -7,53 +7,31 @@ No database involved — files are either perfect (in destination/) or deleted.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
-import shutil
 from pathlib import Path
-from typing import Any
 
-from radio_ripper.domain.models import TrackInfo
+from radio_ripper.domain.models import FingerprintResult, TrackInfo
 from radio_ripper.infra.config import Settings
+from radio_ripper.infra.http import HttpxAsyncClient
+from radio_ripper.services.base_processor import BaseInboxProcessor
 from radio_ripper.services.fingerprint import (
     FingerprintError,
     FingerprintProvider,
     NonRetriableFingerprintError,
 )
-from radio_ripper.services.metadata import MetadataProvider
-from radio_ripper.services.storage import compute_file_path
+from radio_ripper.services.lyrics import LyricsOvhProvider
+from radio_ripper.services.metadata import CoverArtProvider, MetadataProvider
+from radio_ripper.services.popularity import PopularityProvider
+from radio_ripper.services.repository import NullTrackRepository
+from radio_ripper.services.storage import compute_file_path, remux_mp3
 from radio_ripper.services.tagging import TrackTagger
 from radio_ripper.services.track_processing import (
     enrich_and_file,
     fingerprint_song,
 )
 
-_LOGGER = logging.getLogger(__name__)
 
-
-class _NullRepo:
-    """Minimal repository stub — no-op for all calls."""
-
-    async def remove(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    async def find_all_by_artist_title(self, *args: Any, **kwargs: Any) -> list[Any]:
-        return []
-
-    async def find_all_by_recording_id(self, *args: Any, **kwargs: Any) -> list[Any]:
-        return []
-
-    async def update_file_path(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    async def update_fingerprint(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    async def aclose(self) -> None:
-        pass
-
-class FileProcessor:
+class FileProcessor(BaseInboxProcessor):
     """Single-worker inbox processor.
 
     Polls *inbox* for ``.mp3`` files, processes each sequentially:
@@ -76,81 +54,20 @@ class FileProcessor:
         *,
         name: str = "processor",
         poll_interval: float = 5.0,
-        cover_provider: Any | None = None,
-        popularity_provider: Any | None = None,
+        cover_provider: CoverArtProvider | None = None,
+        popularity_provider: PopularityProvider | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        self._inbox = inbox
-        self._temp_dir = temp_dir
+        super().__init__(inbox, temp_dir, name=name, poll_interval=poll_interval, logger=logger)
         self._settings = settings
         self._fingerprint = fingerprint_provider
         self._metadata = metadata_provider
         self._tagger = tagger
-        self._name = name
-        self._poll_interval = poll_interval
         self._cover_provider = cover_provider
         self._popularity = popularity_provider
-        self._log = logger or _LOGGER
-        self._stop_event = asyncio.Event()
-        self._task: asyncio.Task[None] | None = None
-        self._null_repo = _NullRepo()
+        self._null_repo = NullTrackRepository()
 
-    async def start(self) -> None:
-        self._inbox.mkdir(parents=True, exist_ok=True)
-        self._stop_event.clear()
-        self._task = asyncio.create_task(self._run())
-
-    async def stop(self) -> None:
-        self._stop_event.set()
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
-
-    async def _run(self) -> None:
-        self._log.info(
-            "Processor started — polling %s every %.0fs",
-            self._inbox,
-            self._poll_interval,
-        )
-        while not self._stop_event.is_set():
-            try:
-                await self._drain_inbox()
-            except Exception:
-                self._log.exception("Processor inbox scan failed")
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=self._poll_interval
-                )
-        self._log.info("Processor stopped")
-
-    async def _drain_inbox(self) -> None:
-        for mp3 in sorted(self._inbox.glob("*.mp3")):
-            if self._stop_event.is_set():
-                return
-            try:
-                await self._process_one(mp3)
-            except Exception:
-                self._log.exception("Unexpected error processing %s", mp3)
-
-    async def _process_one(self, mp3_path: Path) -> None:
-        proc_path = mp3_path.with_suffix(".processing")
-        try:
-            mp3_path.rename(proc_path)
-        except OSError:
-            self._log.warning(
-                "Cannot rename %s (concurrent access?) — skipping", mp3_path
-            )
-            return
-
-        try:
-            await self._fingerprint_and_process(proc_path)
-        except Exception:
-            self._log.exception("Failed to process %s — deleting", proc_path.name)
-            self._cleanup_file(proc_path)
-
-    async def _fingerprint_and_process(self, proc_path: Path) -> None:
+    async def _process_file(self, proc_path: Path) -> None:
         try:
             result = await self._fingerprint.fingerprint(proc_path)
         except NonRetriableFingerprintError:
@@ -194,17 +111,18 @@ class FileProcessor:
             self._log.exception("Processing failed for %s — deleting", untested.name)
             self._cleanup_file(untested)
 
+    async def _on_processing_error(self, proc_path: Path) -> None:
+        self._cleanup_file(proc_path)
+
     async def _enrich_and_finalize(
         self,
         file_path: Path,
         track: TrackInfo,
-        result: Any,
+        result: FingerprintResult,
     ) -> None:
         """Enrich, tag, apply fingerprint, fetch cover/lyrics, move to dest."""
         provenance = f"{self._name}/{self._name}"
 
-        # Fix MP3 frame alignment from ICY stream cut-points
-        from radio_ripper.services.storage import remux_mp3
         remux_mp3(file_path)
 
         final_path = await enrich_and_file(
@@ -227,7 +145,7 @@ class FileProcessor:
             provenance,
             self._settings,
             self._fingerprint,
-            self._null_repo,  # type: ignore[arg-type]
+            self._null_repo,
             self._tagger,
             cover_provider=self._cover_provider,
             popularity_provider=self._popularity,
@@ -236,9 +154,6 @@ class FileProcessor:
         )
 
         try:
-            from radio_ripper.infra.http import HttpxAsyncClient
-            from radio_ripper.services.lyrics import LyricsOvhProvider
-
             lyrics_provider = LyricsOvhProvider(HttpxAsyncClient(), timeout=5.0)
             lyrics = await lyrics_provider.fetch(track.artist, track.title)
             if lyrics:
@@ -250,26 +165,7 @@ class FileProcessor:
                     len(lyrics),
                 )
         except Exception:
-            self._log.debug(
-                "[%s] Lyrics fetch failed for %s", self._name, final_path.name
-            )
-
-    def _move_to_temp(self, path: Path) -> None:
-        self._temp_dir.mkdir(parents=True, exist_ok=True)
-        dest = self._temp_dir / path.name
-        if dest.suffix == ".processing":
-            dest = dest.with_suffix(".mp3")
-        try:
-            shutil.move(str(path), str(dest))
-            self._log.info("Moved %s → %s", path.name, dest)
-        except OSError:
-            self._log.exception("Failed to move %s to temp", path)
-
-    def _cleanup_file(self, path: Path) -> None:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            self._log.exception("Cannot remove %s", path)
+            self._log.debug("[%s] Lyrics fetch failed for %s", self._name, final_path.name)
 
 
 __all__ = ["FileProcessor"]

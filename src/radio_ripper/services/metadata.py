@@ -13,8 +13,11 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any
 
+import httpx
+
 from radio_ripper.domain.models import EnrichedInfo, ITunesTrackData, MusicBrainzData
 from radio_ripper.infra.http import AsyncHttpClient
+from radio_ripper.infra.resilience import retry_async
 
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 
@@ -45,7 +48,8 @@ class ITunesMetadataProvider(MetadataProvider):
         self._metadata_timeout = metadata_timeout
         self._cover_timeout = cover_timeout
 
-    async def fetch(self, artist: str, title: str) -> EnrichedInfo | None:
+    @retry_async(max_attempts=2, base_delay=0.5, exceptions=(httpx.HTTPError,))
+    async def fetch(self, artist: str, title: str) -> EnrichedInfo | None:  # type: ignore[override]
         query = f"{artist} {title}".strip()
         if not query:
             return None
@@ -119,7 +123,29 @@ class NullMetadataProvider(MetadataProvider):
         return None
 
 
-class CoverArtArchiveProvider:
+class CoverArtProvider(ABC):
+    """Fetch cover art and recording metadata via MusicBrainz / Cover Art Archive."""
+
+    @abstractmethod
+    async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
+        """Return front-cover bytes for a recording, or ``None``."""
+
+    @abstractmethod
+    async def fetch_recording_data(self, recording_id: str) -> MusicBrainzData | None:
+        """Return detailed MusicBrainz metadata for a recording MBID."""
+
+
+class NullCoverArtProvider(CoverArtProvider):
+    """No-op provider — used when CAA is disabled."""
+
+    async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
+        return None
+
+    async def fetch_recording_data(self, recording_id: str) -> MusicBrainzData | None:
+        return None
+
+
+class CoverArtArchiveProvider(CoverArtProvider):
     """Fetch album cover art from coverartarchive.org via a MusicBrainz recording MBID.
 
     Used as a secondary source when iTunes enrichment returned no artwork.
@@ -237,6 +263,7 @@ class CoverArtArchiveProvider:
         self._last_mb_request: float = 0.0
         self._recording_cache: dict[str, dict[str, Any]] = {}
 
+    @retry_async(max_attempts=2, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def _rate_limited_json(
         self,
         url: str,
@@ -284,7 +311,9 @@ class CoverArtArchiveProvider:
 
 __all__ = [
     "CoverArtArchiveProvider",
+    "CoverArtProvider",
     "ITunesMetadataProvider",
     "MetadataProvider",
+    "NullCoverArtProvider",
     "NullMetadataProvider",
 ]

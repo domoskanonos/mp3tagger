@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
@@ -42,7 +39,7 @@ class TestSanitizeFilename:
         assert sanitize_filename("  ") == "unknown"
 
     def test_after_stripping_illegal_chars_returns_unknown(self):
-        assert sanitize_filename("<>:\"") == "unknown"
+        assert sanitize_filename('<>:"') == "unknown"
 
 
 class TestComputeFilePath:
@@ -64,7 +61,9 @@ class TestComputeFilePath:
         (tmp_path / "Artist").mkdir()
         (tmp_path / "Artist" / "Artist - Song.mp3").write_text("old")
         p = compute_file_path(tmp_path, "Artist", "Song", "x")
-        assert p.name == "Artist - Song (2).mp3"
+        assert p.name.startswith("Artist - Song_")
+        assert p.name.endswith(".mp3")
+        assert str(p.name) != "Artist - Song.mp3"
 
 
 class TestRemuxMp3:

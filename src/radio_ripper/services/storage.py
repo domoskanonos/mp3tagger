@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -47,11 +47,9 @@ def compute_file_path(
     else:
         parent = destination / artist_dir
     candidate = parent / f"{base}.mp3"
-    if not overwrite:
-        i = 2
-        while candidate.exists():
-            candidate = parent / f"{base} ({i}).mp3"
-            i += 1
+    if not overwrite and candidate.exists():
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        candidate = parent / f"{base}_{ts}.mp3"
     return candidate
 
 

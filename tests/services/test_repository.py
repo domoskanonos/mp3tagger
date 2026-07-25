@@ -85,9 +85,7 @@ class TestSQLiteTrackRepository:
         # We check exists still true
         assert await sqlite_repo.exists("TopHits", "Adele - Hello")
 
-    async def test_update_enrichment_unknown_song_no_error(
-        self, sqlite_repo: SQLiteTrackRepository
-    ):
+    async def test_update_enrichment_unknown_song_no_error(self, sqlite_repo: SQLiteTrackRepository):
         await sqlite_repo.update_enrichment(
             "FakeStation",
             "Unknown - Song",
@@ -143,9 +141,7 @@ class TestSQLiteTrackRepository:
         assert results[0].station_name == "Rock"
         assert results[1].station_name == "Dance"
 
-    async def test_find_all_by_artist_title_case_insensitive(
-        self, sqlite_repo: SQLiteTrackRepository
-    ):
+    async def test_find_all_by_artist_title_case_insensitive(self, sqlite_repo: SQLiteTrackRepository):
         track = SavedTrack("A - X", "A", "X", "/a.mp3", 100)
         await sqlite_repo.register(track, "Rock")
         results = await sqlite_repo.find_all_by_artist_title("a", "x")
@@ -186,9 +182,6 @@ class TestSQLiteTrackRepository:
         found = await sqlite_repo.find_by_file_path("/new.mp3")
         assert found is not None
         assert found.track.file_path == "/new.mp3"
-
-    async def test_run_static_method(self):
-        assert SQLiteTrackRepository._run(42) == 42
 
     async def test_register_on_closed_db_raises(self, tmp_db_path: Path):
         repo = SQLiteTrackRepository(tmp_db_path)

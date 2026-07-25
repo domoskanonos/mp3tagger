@@ -147,10 +147,6 @@ class SQLiteTrackRepository(TrackRepository):
             with contextlib.suppress(sqlite3.OperationalError):
                 self._conn.execute(f"ALTER TABLE songs ADD COLUMN {col} {decl}")
 
-    @staticmethod
-    def _run(coro: object) -> object:
-        return coro
-
     async def exists(self, station_name: str, stream_title: str) -> bool:
         async with self._lock:
             return await asyncio.to_thread(self._exists_sync, station_name, stream_title)
@@ -158,8 +154,7 @@ class SQLiteTrackRepository(TrackRepository):
     def _exists_sync(self, station_name: str, stream_title: str) -> bool:
         try:
             cur = self._conn.execute(
-                "SELECT 1 FROM songs "
-                "WHERE LOWER(station_name)=LOWER(?) AND LOWER(stream_title)=LOWER(?) LIMIT 1",
+                "SELECT 1 FROM songs WHERE LOWER(station_name)=LOWER(?) AND LOWER(stream_title)=LOWER(?) LIMIT 1",
                 (station_name, stream_title),
             )
             return cur.fetchone() is not None
@@ -497,9 +492,7 @@ class SQLiteTrackRepository(TrackRepository):
 
     async def update_file_path(self, station_name: str, stream_title: str, new_path: str) -> None:
         async with self._lock:
-            await asyncio.to_thread(
-                self._update_file_path_sync, station_name, stream_title, new_path
-            )
+            await asyncio.to_thread(self._update_file_path_sync, station_name, stream_title, new_path)
 
     def _update_file_path_sync(self, station_name: str, stream_title: str, new_path: str) -> None:
         try:
@@ -528,4 +521,43 @@ class SQLiteTrackRepository(TrackRepository):
             await asyncio.to_thread(self._conn.close)
 
 
-__all__ = ["SQLiteTrackRepository", "TrackRepository"]
+class NullTrackRepository(TrackRepository):
+    """No-op repository — used when persistence is disabled."""
+
+    async def exists(self, station_name: str, stream_title: str) -> bool:
+        return False
+
+    async def register(self, track: SavedTrack, station_name: str) -> None:
+        return None
+
+    async def update_fingerprint(
+        self, station_name: str, stream_title: str, *, recording_id: str, score: float
+    ) -> None:
+        return None
+
+    async def find_all_by_recording_id(self, recording_id: str) -> list[TrackRecord]:
+        return []
+
+    async def find_all_by_artist_title(self, artist: str, title: str) -> list[TrackRecord]:
+        return []
+
+    async def update_enrichment(self, station_name: str, stream_title: str, **kwargs: object) -> None:
+        return None
+
+    async def find_by_file_path(self, file_path: str) -> TrackRecord | None:
+        return None
+
+    async def list_all(self) -> list[TrackRecord]:
+        return []
+
+    async def update_file_path(self, station_name: str, stream_title: str, new_path: str) -> None:
+        return None
+
+    async def remove(self, station_name: str, stream_title: str) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+__all__ = ["NullTrackRepository", "SQLiteTrackRepository", "TrackRecord", "TrackRepository"]

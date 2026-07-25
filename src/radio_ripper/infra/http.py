@@ -22,9 +22,7 @@ class AsyncHttpClient(ABC):
         """Fetch a URL and return its body as text."""
 
     @abstractmethod
-    async def get_json(
-        self, url: str, *, params: dict[str, Any] | None = None, timeout: float | None = None
-    ) -> Any:
+    async def get_json(self, url: str, *, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         """Fetch a URL and return parsed JSON."""
 
     @abstractmethod
@@ -71,9 +69,7 @@ class HttpxAsyncClient(AsyncHttpClient):
         resp.raise_for_status()
         return resp.text
 
-    async def get_json(
-        self, url: str, *, params: dict[str, Any] | None = None, timeout: float | None = None
-    ) -> Any:
+    async def get_json(self, url: str, *, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         resp = await self._client.get(url, params=params, timeout=timeout)
         resp.raise_for_status()
         return resp.json()

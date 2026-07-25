@@ -8,16 +8,42 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from abc import ABC, abstractmethod
 from pathlib import Path
 
+import httpx
+
 from radio_ripper.infra.http import AsyncHttpClient
+from radio_ripper.infra.resilience import retry_async
 from radio_ripper.services.repository import TrackRepository
 
 _LOGGER = logging.getLogger("radio_ripper.popularity")
 _DELAY = 0.2
 
 
-class DeezerPopularityChecker:
+class PopularityProvider(ABC):
+    """Check track popularity and fetch artist images."""
+
+    @abstractmethod
+    async def get_rank(self, artist: str, title: str) -> int | None:
+        """Return Deezer popularity rank or ``None`` on failure."""
+
+    @abstractmethod
+    async def fetch_artist_image(self, artist: str) -> bytes | None:
+        """Return artist portrait bytes or ``None``."""
+
+
+class NullPopularityProvider(PopularityProvider):
+    """No-op provider — used when popularity checking is disabled."""
+
+    async def get_rank(self, artist: str, title: str) -> int | None:
+        return None
+
+    async def fetch_artist_image(self, artist: str) -> bytes | None:
+        return None
+
+
+class DeezerPopularityChecker(PopularityProvider):
     """Check track popularity and fetch artist images via the public Deezer API.
 
     No API key required — Deezer's search endpoint is public.
@@ -30,12 +56,11 @@ class DeezerPopularityChecker:
         self._client = client
         self._timeout = timeout
 
-    async def get_rank(self, artist: str, title: str) -> int | None:
+    @retry_async(max_attempts=2, base_delay=0.5, exceptions=(httpx.HTTPError,))
+    async def get_rank(self, artist: str, title: str) -> int | None:  # type: ignore[override]
         q = f'{artist} "{title}"'
         try:
-            payload = await self._client.get_json(
-                self._SEARCH_URL, params={"q": q, "limit": 1}, timeout=self._timeout
-            )
+            payload = await self._client.get_json(self._SEARCH_URL, params={"q": q, "limit": 1}, timeout=self._timeout)
         except Exception:
             return None
         data = payload.get("data") if isinstance(payload, dict) else None
@@ -76,7 +101,7 @@ async def maybe_delete_obscure(
     artist: str,
     title: str,
     min_rank: int,
-    popularity_provider: DeezerPopularityChecker | None,
+    popularity_provider: PopularityProvider | None,
     repository: TrackRepository,
     logger: logging.Logger = _LOGGER,
 ) -> bool:
@@ -123,4 +148,9 @@ async def maybe_delete_obscure(
     return True
 
 
-__all__ = ["DeezerPopularityChecker", "maybe_delete_obscure"]
+__all__ = [
+    "DeezerPopularityChecker",
+    "NullPopularityProvider",
+    "PopularityProvider",
+    "maybe_delete_obscure",
+]

@@ -641,9 +641,7 @@ class TestID3TaggerUpdateMusicBrainz:
         _write_blank_mp3(f)
         tagger = ID3Tagger()
         track = TrackInfo("A - B", "A", "B")
-        tagger.write_full(
-            f, track, EnrichedInfo(artist="A", title="B", track_length=259720), None, "S@u"
-        )
+        tagger.write_full(f, track, EnrichedInfo(artist="A", title="B", track_length=259720), None, "S@u")
         mb = MusicBrainzData(recording_id="x", length_ms=261000)
         tagger.update_musicbrainz_metadata(f, mb)
         audio = ID3(f)
@@ -684,9 +682,7 @@ class TestEnrichAndTag:
         mock_tagger.write_full.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_info_fallback_cover_embedded(
-        self, mock_provider, mock_tagger, track, tmp_path
-    ):
+    async def test_no_info_fallback_cover_embedded(self, mock_provider, mock_tagger, track, tmp_path):
         mock_provider.fetch.return_value = None
         f = tmp_path / "s.mp3"
         _write_blank_mp3(f)
@@ -714,9 +710,7 @@ class TestEnrichAndTag:
         mock_tagger.write_full.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_fallback_cover_read_error_suppressed(
-        self, mock_provider, mock_tagger, track, tmp_path
-    ):
+    async def test_fallback_cover_read_error_suppressed(self, mock_provider, mock_tagger, track, tmp_path):
         mock_provider.fetch.return_value = None
         f = tmp_path / "s.mp3"
         _write_blank_mp3(f)
@@ -732,9 +726,7 @@ class TestEnrichAndTag:
         mock_tagger.write_full.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_enriches_with_artwork_download(
-        self, mock_provider, mock_tagger, track, tmp_path
-    ):
+    async def test_enriches_with_artwork_download(self, mock_provider, mock_tagger, track, tmp_path):
         mock_provider.fetch.return_value = EnrichedInfo(
             artist="Artist", title="Song", album="Album", artwork_url="http://example.com/cover.jpg"
         )
@@ -745,25 +737,19 @@ class TestEnrichAndTag:
         mock_provider.download_image.assert_awaited_once_with("http://example.com/cover.jpg")
 
     @pytest.mark.asyncio
-    async def test_write_exception_logged(
-        self, mock_provider, mock_tagger, track, tmp_path, caplog
-    ):
+    async def test_write_exception_logged(self, mock_provider, mock_tagger, track, tmp_path, caplog):
         import logging
 
         caplog.set_level(logging.WARNING)
         mock_tagger.write_full.side_effect = OSError("permission denied")
         f = tmp_path / "s.mp3"
         _write_blank_mp3(f)
-        result = await enrich_and_tag(
-            mock_provider, mock_tagger, f, track, "S@u", logger=logging.getLogger(__name__)
-        )
+        result = await enrich_and_tag(mock_provider, mock_tagger, f, track, "S@u", logger=logging.getLogger(__name__))
         assert result is not None
         assert "tag-enrichment failed" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_fallback_cover_write_exception_logged(
-        self, mock_provider, mock_tagger, track, tmp_path, caplog
-    ):
+    async def test_fallback_cover_write_exception_logged(self, mock_provider, mock_tagger, track, tmp_path, caplog):
         import logging
 
         caplog.set_level(logging.WARNING)

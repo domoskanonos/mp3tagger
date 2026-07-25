@@ -1,0 +1,66 @@
+@startuml radio-ripper-tag Bausteinsicht
+skinparam packageStyle rectangle
+
+package "CLI" {
+    [cli.py] as CLI
+    [__main__.py] as MAIN
+}
+
+package "Services" {
+    [base_processor.py] as BASE
+    [processor.py] as PROCESSOR
+    [uploader.py] as UPLOADER
+    [fingerprint.py] as FP <<ABC>>
+    [metadata.py] as META <<ABC>>
+    [tagging.py] as TAGGING <<ABC>>
+    [lyrics.py] as LYRICS <<ABC>>
+    [popularity.py] as POP <<ABC>>
+    [repository.py] as REPO <<ABC>>
+    [track_processing.py] as TP
+    [storage.py] as STORAGE
+}
+
+package "Domain" {
+    [models.py] as MODELS
+}
+
+package "Infrastructure" {
+    [config.py] as CONFIG
+    [http.py] as HTTP <<ABC>>
+    [logging.py] as LOGGING
+    [resilience.py] as RESILIENCE
+    [errors.py] as ERRORS
+}
+
+CLI --> BASE : erzeugt
+CLI --> PROCESSOR : erzeugt
+CLI --> FP : injiziert
+CLI --> META : injiziert
+CLI --> TAGGING : injiziert
+CLI --> POP : injiziert
+
+PROCESSOR -up-|> BASE : extends
+UPLOADER -up-|> BASE : extends
+
+PROCESSOR --> FP : ruft auf
+PROCESSOR --> META : ruft auf
+PROCESSOR --> TAGGING : ruft auf
+PROCESSOR --> TP : delegiert
+PROCESSOR --> STORAGE : nutzt
+UPLOADER --> TP : delegiert
+UPLOADER --> REPO : persistiert
+
+TP --> MODELS : liest/schreibt
+TP --> REPO : persistiert
+TP --> TAGGING : taggt
+TP --> STORAGE : moved
+
+FP --> HTTP : HTTP-Calls (AcoustID)
+META --> HTTP : HTTP-Calls (iTunes, MBZ, CAA)
+LYRICS --> HTTP : HTTP-Calls (lyrics.ovh)
+POP --> HTTP : HTTP-Calls (Deezer)
+
+CONFIG --> ERRORS : wirft
+HTTP --> RESILIENCE : retry-Decorator
+
+@enduml

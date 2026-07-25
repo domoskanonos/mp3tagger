@@ -9,8 +9,6 @@ import pytest
 from radio_ripper.services.repository import SQLiteTrackRepository
 
 
-
-
 @pytest.fixture
 def tmp_db_path(tmp_path: Path) -> Path:
     """Return path to a fresh in-temp SQLite database file."""

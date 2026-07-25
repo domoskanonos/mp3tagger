@@ -73,7 +73,7 @@ class AcoustidFingerprintProvider(FingerprintProvider):
 
     async def fingerprint(self, path: Path) -> FingerprintResult | None:
         try:
-            import acoustid  # type: ignore[import-untyped]
+            import acoustid
         except ImportError as exc:
             raise FingerprintError(
                 "acoustid library not installed (pip install pyacoustid + system chromaprint)"
