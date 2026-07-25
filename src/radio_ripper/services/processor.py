@@ -185,39 +185,45 @@ class FileProcessor(BaseInboxProcessor):
             precomputed_result=result,
         )
 
-        if not work_path.exists():
-            self._log.info(
-                "[DELETE] %s — Grund: nach Popularitäts-Check gelöscht (zu unbekannt)",
-                work_path.name,
-            )
-            return
+        # fingerprint_song → apply_fingerprint_match benennt .processing → .mp3
+        stage_path = work_path
+        if not stage_path.exists():
+            mp3_path = work_path.with_suffix(".mp3")
+            if mp3_path.exists():
+                stage_path = mp3_path
+            else:
+                self._log.info(
+                    "[DELETE] %s — Grund: nach Popularitäts-Check gelöscht (zu unbekannt)",
+                    work_path.name,
+                )
+                return
 
         # ── Lyrics (in work_dir) ──
         try:
             lyrics_provider = LyricsOvhProvider(HttpxAsyncClient(), timeout=5.0)
             lyrics = await lyrics_provider.fetch(track.artist, track.title)
             if lyrics:
-                self._tagger.write_lyrics(work_path, lyrics)
+                self._tagger.write_lyrics(stage_path, lyrics)
                 self._log.info(
                     "[%s] Lyrics found for %s (%d chars)",
                     self._name,
-                    work_path.name,
+                    stage_path.name,
                     len(lyrics),
                 )
         except Exception:
-            self._log.debug("[%s] Lyrics fetch failed for %s", self._name, work_path.name)
+            self._log.debug("[%s] Lyrics fetch failed for %s", self._name, stage_path.name)
 
         # ── Atomarer Move zu destination ──
         final_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            work_path.rename(final_path)
+            stage_path.rename(final_path)
         except OSError:
             self._log.error(
                 "[DELETE] %s — Grund: Verschieben nach %s fehlgeschlagen",
-                work_path.name,
+                stage_path.name,
                 final_path,
             )
-            self._cleanup_file(work_path)
+            self._cleanup_file(stage_path)
             return
 
         self._log.info("[%s] Fertig: %s", self._name, final_path)
