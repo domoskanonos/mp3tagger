@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import re
-from datetime import UTC, datetime
 from pathlib import Path
+
+from mutagen.id3 import ID3, ID3NoHeaderError
 
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -34,7 +35,6 @@ def compute_file_path(
     stream_title_clean: str,
     *,
     album: str | None = None,
-    overwrite: bool = False,
 ) -> Path:
     if artist and title:
         artist_dir = sanitize_filename(artist)
@@ -46,11 +46,21 @@ def compute_file_path(
         parent = destination / artist_dir / sanitize_filename(album)
     else:
         parent = destination / artist_dir
-    candidate = parent / f"{base}.mp3"
-    if not overwrite and candidate.exists():
-        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
-        candidate = parent / f"{base}_{ts}.mp3"
-    return candidate
+    return parent / f"{base}.mp3"
+
+
+def read_acoustid_score(path: Path) -> float | None:
+    try:
+        audio = ID3(path)
+    except Exception:
+        return None
+    for frame in audio.getall("TXXX"):
+        if frame.desc == "AcoustID Score":
+            try:
+                return float(frame.text[0])
+            except (ValueError, IndexError):
+                return None
+    return None
 
 
 def remux_mp3(path: Path) -> None:
@@ -80,6 +90,7 @@ def remove_empty_parents(file_path: Path, root: Path) -> None:
 
 __all__ = [
     "compute_file_path",
+    "read_acoustid_score",
     "remove_empty_parents",
     "remux_mp3",
     "sanitize_filename",

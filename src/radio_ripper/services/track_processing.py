@@ -129,11 +129,11 @@ async def enrich_and_file(
     enrich_semaphore: asyncio.Semaphore | None = None,
     file_locks: dict[Path, asyncio.Lock] | None = None,
     logger: logging.Logger = _LOGGER,
-) -> Path | None:
-    """Write basic ID3 tags, enrich via iTunes, move to album subfolder.
+) -> EnrichedInfo | None:
+    """Write basic ID3 tags, enrich via iTunes.
 
-    Like :func:`register_and_enrich` but without any database operations.
-    Returns the final (potentially album-moved) path, or ``None`` on error.
+    Like :func:`register_and_enrich` but without any database operations
+    or album-subfolder moves. Returns enrichment info (or ``None`` on error).
     """
     try:
         tagger.write_basic(file_path, track, provenance)
@@ -154,26 +154,13 @@ async def enrich_and_file(
             logger=logger,
         )
 
-    if info and info.album:
-        artist_dir = sanitize_filename(info.artist or track.artist)
-        album_dir = sanitize_filename(info.album)
-        new_dir = settings.destination / artist_dir / album_dir
-        new_dir.mkdir(parents=True, exist_ok=True)
-        new_path = new_dir / file_path.name
-        try:
-            shutil.move(str(file_path), str(new_path))
-            remove_empty_parents(file_path, settings.destination)
-            file_path = new_path
-        except OSError as exc:
-            logger.warning("[%s] album dir move failed: %s", station_name, exc)
-
     logger.info(
-        "[%s] Completed: %s (%d bytes)",
+        "[%s] Tagged: %s (%d bytes)",
         station_name,
         file_path.name,
         _safe_size(file_path),
     )
-    return file_path
+    return info
 
 
 # ---------------------------------------------------------------------------

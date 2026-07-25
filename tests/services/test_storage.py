@@ -11,6 +11,7 @@ with warnings.catch_warnings():
 
 from radio_ripper.services.storage import (
     compute_file_path,
+    read_acoustid_score,
     remove_empty_parents,
     remux_mp3,
     sanitize_filename,
@@ -57,13 +58,12 @@ class TestComputeFilePath:
         p = compute_file_path(tmp_path, "A", "B", "x", album="MyAlbum")
         assert p.parent == tmp_path / "A" / "MyAlbum"
 
-    def test_avoid_collision(self, tmp_path):
+    def test_returns_canonical_path_when_exists(self, tmp_path):
         (tmp_path / "Artist").mkdir()
         (tmp_path / "Artist" / "Artist - Song.mp3").write_text("old")
         p = compute_file_path(tmp_path, "Artist", "Song", "x")
-        assert p.name.startswith("Artist - Song_")
-        assert p.name.endswith(".mp3")
-        assert str(p.name) != "Artist - Song.mp3"
+        # Always returns canonical path — overwrite decision is made by the caller
+        assert p == tmp_path / "Artist" / "Artist - Song.mp3"
 
 
 class TestRemuxMp3:
@@ -81,6 +81,26 @@ class TestRemuxMp3:
         src.write_text("data")
         remux_mp3(src)
         assert src.exists()
+
+
+class TestReadAcoustidScore:
+    def test_returns_none_when_no_tags(self, tmp_path):
+        f = tmp_path / "test.mp3"
+        f.write_text("data")
+        assert read_acoustid_score(f) is None
+
+    def test_returns_score_when_present(self, tmp_path):
+        from mutagen.id3 import ID3, TXXX
+
+        f = tmp_path / "test.mp3"
+        f.write_text("data")
+        audio = ID3()
+        audio.add(TXXX(encoding=3, desc="AcoustID Score", text="0.95"))
+        audio.save(f, v2_version=3)
+        assert read_acoustid_score(f) == 0.95
+
+    def test_returns_none_when_file_missing(self, tmp_path):
+        assert read_acoustid_score(tmp_path / "nonexistent.mp3") is None
 
 
 class TestRemoveEmptyParents:

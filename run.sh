@@ -4,6 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Umgebungsvariablen aus .env laden
+if [ -f .env ]; then
+    set -a
+    . .env
+    set +a
+fi
+
 CONFIG="${CONFIG:-config.json}"
 PID_FILE="./radio_ripper_tag.pid"
 

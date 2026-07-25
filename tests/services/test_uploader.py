@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from radio_ripper.domain.models import EnrichedInfo, FingerprintResult
 from radio_ripper.infra.config import Settings
+from mutagen.id3 import ID3, TXXX
+
 from radio_ripper.services.fingerprint import (
     FingerprintError,
     FingerprintProvider,
@@ -24,7 +26,6 @@ def _settings(tmp_path: Path, **overrides: object) -> Settings:
         "destination": tmp_path / "recordings",
         "database": tmp_path / "ripper.db",
         "mp3_inbox": tmp_path / "mp3_inbox",
-        "overwrite_existing_files": False,
     }
     base.update(overrides)
     return Settings.model_validate(base)
@@ -385,7 +386,7 @@ class TestProcessOneMatch:
         s = _settings(tmp_path)
         mp3 = _touch(s.mp3_inbox / "unenriched.mp3")
         repo = _TrackingRepo()
-        fp = _stub_fingerprint(FingerprintResult(artist="U", title="V", score=0.8, recording_id="r-uv"))
+        fp = _stub_fingerprint(FingerprintResult(artist="U", title="V", score=0.9, recording_id="r-uv"))
         u = Uploader(
             inbox=s.mp3_inbox,
             temp_dir=tmp_path / "temp",
@@ -399,10 +400,15 @@ class TestProcessOneMatch:
         dest = s.destination / "U" / "U - V.mp3"
         assert dest.is_file()
 
-    async def test_match_destination_collision_appends_suffix(self, tmp_path: Path) -> None:
+    async def test_match_existing_better_score_skips(self, tmp_path: Path) -> None:
+        """Existing file has higher AcoustID score — new one is discarded."""
         s = _settings(tmp_path)
         existing = s.destination / "Artist" / "Artist - Song.mp3"
         _touch(existing)
+        # Write a higher score to the existing file
+        audio = ID3()
+        audio.add(TXXX(encoding=3, desc="AcoustID Score", text="0.98"))
+        audio.save(existing, v2_version=3)
         mp3 = _touch(s.mp3_inbox / "collision.mp3")
         repo = _TrackingRepo()
         fp = _stub_fingerprint(FingerprintResult(artist="Artist", title="Song", score=0.95, recording_id="r-c1"))
@@ -416,12 +422,41 @@ class TestProcessOneMatch:
             tagger=_stub_tagger(),
         )
         await u._process_one(mp3)
-        assert existing.is_file()  # original still there
-        # new name has a timestamp suffix
+        assert existing.is_file()  # original preserved
+        assert not (s.mp3_inbox / "collision.processing").exists()
+        assert not (s.mp3_inbox / "collision.mp3").exists()
+        # Only the original remains
         files = list((s.destination / "Artist").iterdir())
-        assert len(files) == 2
-        collided = [f for f in files if f.name.startswith("Artist - Song_")]
-        assert len(collided) == 1, f"Expected a timestamp-suffixed file, got {files}"
+        assert len(files) == 1
+
+    async def test_match_existing_worse_score_replaces(self, tmp_path: Path) -> None:
+        """New file has higher AcoustID score — replaces old file."""
+        s = _settings(tmp_path)
+        existing = s.destination / "Artist" / "Artist - Song.mp3"
+        _touch(existing)
+        # Write a lower score to the existing file
+        audio = ID3()
+        audio.add(TXXX(encoding=3, desc="AcoustID Score", text="0.70"))
+        audio.save(existing, v2_version=3)
+        mp3 = _touch(s.mp3_inbox / "collision.mp3")
+        repo = _TrackingRepo()
+        fp = _stub_fingerprint(FingerprintResult(artist="Artist", title="Song", score=0.95, recording_id="r-c1"))
+        u = Uploader(
+            inbox=s.mp3_inbox,
+            temp_dir=tmp_path / "temp",
+            settings=s,
+            fingerprint_provider=fp,
+            metadata_provider=_stub_metadata(),
+            repository=repo,
+            tagger=_stub_tagger(),
+        )
+        await u._process_one(mp3)
+        assert existing.is_file()  # still there, but now contains new content
+        assert not (s.mp3_inbox / "collision.processing").exists()
+        assert not (s.mp3_inbox / "collision.mp3").exists()
+        # Only the replaced file remains
+        files = list((s.destination / "Artist").iterdir())
+        assert len(files) == 1
 
     async def test_match_artist_title_special_chars_sanitized(self, tmp_path: Path) -> None:
         s = _settings(tmp_path)

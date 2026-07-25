@@ -24,7 +24,11 @@ from radio_ripper.services.lyrics import LyricsOvhProvider
 from radio_ripper.services.metadata import CoverArtProvider, MetadataProvider
 from radio_ripper.services.popularity import PopularityProvider
 from radio_ripper.services.repository import TrackRepository
-from radio_ripper.services.storage import compute_file_path
+from radio_ripper.services.storage import (
+    compute_file_path,
+    read_acoustid_score,
+    remove_empty_parents,
+)
 from radio_ripper.services.tagging import TrackTagger
 from radio_ripper.services.track_processing import (
     fingerprint_song,
@@ -71,37 +75,70 @@ class Uploader(BaseInboxProcessor):
         try:
             result = await self._fingerprint.fingerprint(proc_path)
         except NonRetriableFingerprintError:
-            self._log.warning("Corrupt/unreadable %s — deleting", proc_path.name)
+            self._log.warning("[DELETE] %s — Grund: Datei korrupt/nicht lesbar", proc_path.name)
             self._cleanup_file(proc_path)
             return
         except FingerprintError:
             self._log.warning(
-                "Fingerprint infrastructure error for %s — moving to temp for retry",
+                "[TEMP] %s — Grund: Fingerprint-Infrastrukturfehler, verschoben zur Prüfung",
                 proc_path.name,
             )
             self._move_to_temp(proc_path)
             return
 
         if result is None or not result.recording_id:
-            self._log.info("No fingerprint match for %s — moving to temp", proc_path.name)
+            self._log.info("[TEMP] %s — Grund: kein AcoustID-Treffer, verschoben zur Prüfung", proc_path.name)
             self._move_to_temp(proc_path)
+            return
+
+        if result.score < self._settings.acoustid_min_score:
+            self._log.info(
+                "[DELETE] %s — Grund: Score %.2f < Mindestwert %.2f",
+                proc_path.name,
+                result.score,
+                self._settings.acoustid_min_score,
+            )
+            self._cleanup_file(proc_path)
             return
 
         stream_title = f"{result.artist} - {result.title}"
         track = TrackInfo.from_stream_title(stream_title)
-        base_path = compute_file_path(
+
+        # Compute target .mp3 path (no album yet — added by register_and_enrich later)
+        target_path = compute_file_path(
             self._settings.destination,
             result.artist,
             result.title,
             stream_title,
-            overwrite=self._settings.overwrite_existing_files,
         )
-        untested = base_path.with_name(base_path.stem + ".untested" + base_path.suffix)
+        # Score-based overwrite: discard if existing file has a better score
+        if target_path.exists():
+            existing_score = read_acoustid_score(target_path)
+            if existing_score is not None and existing_score >= result.score:
+                self._log.info(
+                    "[DELETE] %s — Grund: existierende Datei hat besseren/gleichen Score (%.4f >= %.4f)",
+                    proc_path.name,
+                    existing_score,
+                    result.score,
+                )
+                self._cleanup_file(proc_path)
+                return
+            self._log.info(
+                "[DELETE] %s — Grund: neue Datei hat besseren Score (%.4f > %.4f), alte gelöscht",
+                target_path,
+                result.score,
+                existing_score or 0.0,
+            )
+            target_path.unlink(missing_ok=True)
+            remove_empty_parents(target_path, self._settings.destination)
+
+        # Move .processing → .untested in destination (register_and_enrich handles the rest)
+        untested = target_path.with_name(target_path.stem + ".untested" + target_path.suffix)
         untested.parent.mkdir(parents=True, exist_ok=True)
         try:
             proc_path.rename(untested)
         except OSError:
-            self._log.error("Cannot move %s → %s", proc_path, untested)
+            self._log.error("[DELETE] %s — Grund: Verschieben nach %s fehlgeschlagen", proc_path.name, untested)
             self._move_to_temp(proc_path)
             return
 

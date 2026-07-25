@@ -16,8 +16,8 @@ from radio_ripper.infra.config import Settings, load_settings
 from radio_ripper.infra.errors import ConfigurationError
 from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.infra.logging import configure_logging
-from radio_ripper.services.fingerprint import AcoustidFingerprintProvider, NullFingerprintProvider
-from radio_ripper.services.metadata import ITunesMetadataProvider
+from radio_ripper.services.fingerprint import AcoustidFingerprintProvider
+from radio_ripper.services.metadata import CoverArtArchiveProvider, ITunesMetadataProvider
 from radio_ripper.services.popularity import DeezerPopularityChecker, PopularityProvider
 from radio_ripper.services.processor import FileProcessor
 from radio_ripper.services.tagging import ID3Tagger
@@ -40,12 +40,11 @@ async def _run(settings: Settings, logger: logging.Logger) -> int:
     client = HttpxAsyncClient(user_agent=settings.user_agent)
 
     api_key = os.environ.get("ACOUSTID_API_KEY") or os.environ.get("ACCOUST_ID", "")
-    fp: AcoustidFingerprintProvider | NullFingerprintProvider
-    if api_key:
-        fp = AcoustidFingerprintProvider(api_key, min_score=settings.acoustid_min_score)
-    else:
-        logger.warning("ACOUSTID_API_KEY not set — fingerprinting disabled")
-        fp = NullFingerprintProvider()
+    if not api_key:
+        logger.critical("ACOUSTID_API_KEY not set — cannot run without fingerprinting.")
+        logger.critical("Set ACOUSTID_API_KEY (or ACCOUST_ID) in .env or environment.")
+        return 1
+    fp = AcoustidFingerprintProvider(api_key, min_score=settings.acoustid_min_score)
 
     metadata = ITunesMetadataProvider(client, metadata_timeout=settings.metadata_timeout)
     tagger = ID3Tagger()
@@ -54,6 +53,10 @@ async def _run(settings: Settings, logger: logging.Logger) -> int:
     popularity: PopularityProvider | None = None
     if settings.min_popularity_rank and settings.min_popularity_rank > 0:
         popularity = DeezerPopularityChecker(client)
+
+    cover_archive: CoverArtArchiveProvider | None = None
+    if settings.enable_coverartarchive:
+        cover_archive = CoverArtArchiveProvider(client, timeout=settings.cover_timeout)
 
     proc = FileProcessor(
         inbox=inbox,
@@ -64,7 +67,7 @@ async def _run(settings: Settings, logger: logging.Logger) -> int:
         tagger=tagger,
         name="tag",
         poll_interval=2.0,
-        cover_provider=None,
+        cover_provider=cover_archive,
         popularity_provider=popularity,
         logger=logger,
     )

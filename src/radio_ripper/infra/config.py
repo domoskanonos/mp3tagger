@@ -22,8 +22,6 @@ class Settings(BaseModel):
     log_file: Path | None = None
     user_agent: str = "Radio-Ripper/2.0"
 
-    overwrite_existing_files: bool = False
-
     fallback_cover_path: Path | None = None
     metadata_timeout: float = Field(default=8.0, ge=0.5)
     cover_timeout: float = Field(default=15.0, ge=0.5)
@@ -54,7 +52,7 @@ class Settings(BaseModel):
         if self.log_file is None:
             self.log_file = self.work_dir / "radio_ripper.log"
         if self.mp3_inbox is None:
-            self.mp3_inbox = self.work_dir / "mp3_inbox"
+            self.mp3_inbox = Path("./mp3_inbox")
         return self
 
 
