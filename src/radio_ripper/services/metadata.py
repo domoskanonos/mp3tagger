@@ -192,7 +192,7 @@ class CoverArtArchiveProvider(CoverArtProvider):
             return None
         releases = await self._fetch_recording_releases(
             recording_id,
-            extra_inc="isrcs+genres",
+            extra_inc="releases+isrcs+genres",
         )
         if releases is None:
             return None
