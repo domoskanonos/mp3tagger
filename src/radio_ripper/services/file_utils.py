@@ -10,7 +10,7 @@ _ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def sanitize_filename(name: str) -> str:
+def sanitize_filename(name: str | None) -> str:
     if name is None:
         return "unknown"
     name = name.strip()
