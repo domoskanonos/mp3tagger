@@ -1,20 +1,20 @@
 # mypy: disable-error-code="no-untyped-call"
-"""ID3v2 tagger built on top of :mod:`mutagen`.
+"""ID3v2-Tagger basierend auf :mod:`mutagen`.
 
-:class:`TrackTagger` is the ABC, :class:`ID3Tagger` the default implementation.
-Tags written:
-    - ``TPE1``  (Artist)
-    - ``TPE2``  (Album Artist) — identical to Artist
-    - ``TIT2``  (Title)
+:class:`TrackTagger` ist das ABC, :class:`ID3Tagger` die Standard-Implementierung.
+Geschriebene Tags:
+    - ``TPE1``  (Interpret)
+    - ``TPE2``  (Album-Interpret) — identisch zu TPE1
+    - ``TIT2``  (Titel)
     - ``TALB``  (Album) — optional
-    - ``TYER``  (Year) — optional
-    - ``TRSN``  (Internet Radio Station Name) — from provenance
-    - ``TPUB``  (Publisher/Label) — radio station name for Jellyfin
+    - ``TYER``  (Jahr) — optional
+    - ``TRSN``  (Internetsender-Name) — aus der Provenance
+    - ``TPUB``  (Label/Verlag)
     - ``COMM``  (Recorded via radiostream)
-    - ``TXXX:RIPPEDBY`` (station@playlist) — provenance
-    - ``TLEN``  (Track length in ms) — optional, from iTunes
-    - ``TXXX:ITunes*``  (iTunes metadata IDs/URLs) — optional
-    - ``APIC``  (Cover art, JPEG or PNG only, scaled 500-1000 px) — optional
+    - ``TXXX:RIPPEDBY`` (Station@Playlist) — Provenance
+    - ``TLEN``  (Titel-Länge in ms) — optional, von iTunes/MusicBrainz
+    - ``TXXX:ITunes*``  (iTunes-Metadaten) — optional
+    - ``APIC``  (Cover, JPEG/PNG, skaliert auf 500-1000 px) — optional
 """
 
 from __future__ import annotations
@@ -53,7 +53,11 @@ _MIN_COVER_PX = 500
 _MAX_COVER_PX = 1000
 
 
+# ── Hilfsfunktionen ──
+
+
 def _guess_image_mime(data: bytes) -> str:
+    """Ermittelt den MIME-Typ eines Bildes anhand der Magic Bytes."""
     if data.startswith(b"\xff\xd8\xff") or b"JFIF" in data[:20]:
         return "image/jpeg"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -64,6 +68,12 @@ def _guess_image_mime(data: bytes) -> str:
 
 
 def _scale_cover(data: bytes) -> tuple[bytes, str] | None:
+    """Skaliert ein Cover-Bild auf 500-1000 px (längste Seite).
+
+    Nur JPEG und PNG werden akzeptiert — GIF wird still ignoriert.
+    Wenn Pillow fehlt oder das Bild nicht dekodiert werden kann,
+    werden die Original-Daten unverändert zurückgegeben.
+    """
     mime = _guess_image_mime(data)
     if mime not in ("image/jpeg", "image/png"):
         return None
@@ -96,21 +106,31 @@ def _scale_cover(data: bytes) -> tuple[bytes, str] | None:
 
 
 @contextlib.contextmanager
-def _with_audio(file_path: Path, op_name: str = "") -> Iterator[ID3]:
-    lsuffix = f" for {op_name}" if op_name else ""
+def _tag_edit_context(file_path: Path, op_name: str = "") -> Iterator[ID3]:
+    """Lädt eine MP3-Datei als ID3-Objekt, gibt sie zum Editieren frei
+    und speichert sie beim Verlassen des Context-Managers wieder.
+
+    Fehler beim Laden oder Speichern werden als TaggingError geworfen.
+    """
+    lsuffix = f" für {op_name}" if op_name else ""
     try:
         audio = _load_or_create(file_path)
     except Exception as exc:
-        raise TaggingError(f"failed to load {file_path}{lsuffix}: {exc}") from exc
+        raise TaggingError(f"Datei konnte nicht geladen werden {file_path}{lsuffix}: {exc}") from exc
     yield audio
     try:
         audio.save(file_path, v2_version=3, v1=2)
     except Exception as exc:
         ssuffix = f" {op_name}" if op_name else ""
-        raise TaggingError(f"failed to save{ssuffix} to {file_path}: {exc}") from exc
+        raise TaggingError(f"Speichern fehlgeschlagen{ssuffix} für {file_path}: {exc}") from exc
 
 
 def _embed_apic(audio: ID3, data: bytes, apic_type: int, desc: str) -> None:
+    """Bettet ein Bild als APIC-Frame in das ID3-Objekt ein.
+
+    Vorhandene Frames mit demselben Namen (z.B. APIC:Cover) werden vorher
+    gelöscht. Das Bild wird vor dem Einbetten via _scale_cover skaliert.
+    """
     audio.delall(f"APIC:{desc}")
     scaled = _scale_cover(data)
     if scaled is not None:
@@ -119,11 +139,45 @@ def _embed_apic(audio: ID3, data: bytes, apic_type: int, desc: str) -> None:
 
 
 def _station_name(provenance: str) -> str:
+    """Extrahiert den Sendernamen aus der Provenance-Zeichenkette.
+
+    Provenance-Format: ``sendername@playlistname`` → ``sendername``.
+    """
     return provenance.split("@")[0] if "@" in provenance else provenance
 
 
+def _load_or_create(file_path: Path) -> ID3:
+    """Lädt vorhandene ID3-Tags oder erzeugt ein leeres ID3-Objekt."""
+    try:
+        return ID3(file_path)
+    except ID3NoHeaderError:
+        return ID3()
+
+
+def read_acoustid_score(path: Path) -> float | None:
+    """Liest den AcoustID-Score aus den ID3-Tags einer MP3-Datei.
+
+    Gibt ``None`` zurück, wenn die Datei keine Tags hat oder kein
+    ``TXXX:AcoustID Score``-Frame vorhanden ist.
+    """
+    try:
+        audio = ID3(path)
+    except Exception:
+        return None
+    for frame in audio.getall("TXXX"):
+        if frame.desc == "AcoustID Score":
+            try:
+                return float(frame.text[0])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+# ── ABC ──
+
+
 class TrackTagger(ABC):
-    """Writes ID3 tags to a recorded MP3 file."""
+    """Abstrakter ID3-Tagger. Die einzige öffentliche Methode ist ``write_all``."""
 
     @abstractmethod
     def write_all(
@@ -134,26 +188,20 @@ class TrackTagger(ABC):
         *,
         enriched: EnrichedInfo | None = None,
         cover_bytes: bytes | None = None,
-        fallback_cover: bytes | None = None,
         recording_id: str | None = None,
         score: float = 0.0,
         mb_data: MusicBrainzData | None = None,
         artist_image: bytes | None = None,
         lyrics: str | None = None,
     ) -> None:
-        """Write ALL tags in one save. Combines basic, enriched, fingerprint,
-        cover art, artist image, and lyrics into a single mutagen save call."""
+        """Schreibt ALLE Tags in einem einzigen Durchgang."""
 
 
-def _load_or_create(file_path: Path) -> ID3:
-    try:
-        return ID3(file_path)
-    except ID3NoHeaderError:
-        return ID3()
+# ── Implementierung ──
 
 
 class ID3Tagger(TrackTagger):
-    """mutagen-backed ID3 tagger."""
+    """mutagen-basierte ID3-Tagger-Implementierung."""
 
     def write_all(
         self,
@@ -163,7 +211,6 @@ class ID3Tagger(TrackTagger):
         *,
         enriched: EnrichedInfo | None = None,
         cover_bytes: bytes | None = None,
-        fallback_cover: bytes | None = None,
         recording_id: str | None = None,
         score: float = 0.0,
         mb_data: MusicBrainzData | None = None,
@@ -171,11 +218,11 @@ class ID3Tagger(TrackTagger):
         lyrics: str | None = None,
     ) -> None:
         enriched = enriched or EnrichedInfo()
-        with _with_audio(file_path, "tags") as audio:
+        with _tag_edit_context(file_path, "tags") as audio:
             self._write_all_to(
                 audio, track, provenance,
                 enriched=enriched, cover_bytes=cover_bytes,
-                fallback_cover=fallback_cover, recording_id=recording_id,
+                recording_id=recording_id,
                 score=score, mb_data=mb_data, artist_image=artist_image,
                 lyrics=lyrics,
             )
@@ -188,14 +235,25 @@ class ID3Tagger(TrackTagger):
         *,
         enriched: EnrichedInfo,
         cover_bytes: bytes | None,
-        fallback_cover: bytes | None,
         recording_id: str | None,
         score: float,
         mb_data: MusicBrainzData | None,
         artist_image: bytes | None,
         lyrics: str | None,
     ) -> None:
-        ALL_FRAMES = (
+        """Schreibt alle ID3-Frames in einem Durchgang in das *audio*-Objekt.
+
+        Ablauf:
+          1. Alle bekannten Frames löschen (saubere Platte)
+          2. Basis-Frames (TPE1, TPE2, TIT2, TALB, TRSN, COMM, TXXX:RIPPEDBY)
+          3. enrichment (TCON, TDRC, TRCK, TPOS, TLEN, TPUB, iTunes-TXXX)
+          4. Fingerprint (TXXX:MusicBrainz Recording Id, TXXX:AcoustID Score,
+             MB-Frames, TSRC)
+          5. Cover-Artwork (APIC:Cover + APIC:Performer)
+          6. Liedtexte (USLT, TXXX:Lyrics)
+        """
+        # ── 1. Alte Frames löschen ──
+        ALLE_FRAMES = (
             "TPE1", "TPE2", "TIT2", "TALB", "TRSN", "TPUB", "COMM", "TXXX:RIPPEDBY",
             "TCON", "TDRC", "TRCK", "TPOS", "APIC", "TLEN",
             "TXXX:ITunesTrackId", "TXXX:ITunesArtistId", "TXXX:ITunesCollectionId",
@@ -210,17 +268,17 @@ class ID3Tagger(TrackTagger):
             "TXXX:CatalogNumber", "TXXX:Barcode",
             "USLT", "TXXX:Lyrics",
         )
-        for frame in ALL_FRAMES:
+        for frame in ALLE_FRAMES:
             audio.delall(frame)
 
-        # Basic
+        # ── 2. Basis-Frames ──
         if track.artist:
             audio.add(TPE1(encoding=3, text=track.artist))
             audio.add(TPE2(encoding=3, text=track.artist))
         if track.title:
             audio.add(TIT2(encoding=3, text=track.title))
 
-        # Album: enriched → mb_data → track fallback
+        # Album: enriched → mb_data → track-Titel als Fallback
         album = enriched.album
         if not album and mb_data and mb_data.release_title:
             album = mb_data.release_title
@@ -229,7 +287,7 @@ class ID3Tagger(TrackTagger):
         if album:
             audio.add(TALB(encoding=3, text=album))
 
-        # Year: enriched → mb_data.release_date
+        # Jahr: enriched → mb_data.release_date
         year = enriched.year
         if not year and mb_data and mb_data.release_date:
             year = mb_data.release_date[:4]
@@ -245,7 +303,7 @@ class ID3Tagger(TrackTagger):
 
         audio.add(TRSN(encoding=3, text=_station_name(provenance)))
 
-        # Label: enriched → mb_data.release_label (mb_data wins)
+        # Label: mb_data.release_label → enriched.label (MB-Daten haben Vorrang)
         label = None
         if mb_data and mb_data.release_label:
             label = mb_data.release_label
@@ -254,6 +312,7 @@ class ID3Tagger(TrackTagger):
         if label:
             audio.add(TPUB(encoding=3, text=label))
 
+        # Track-/Disc-Nummer
         if enriched.track_number is not None:
             trck = str(enriched.track_number)
             if enriched.disc_number is not None:
@@ -262,7 +321,7 @@ class ID3Tagger(TrackTagger):
         if enriched.disc_number is not None:
             audio.add(TPOS(encoding=3, text=str(enriched.disc_number)))
 
-        # Track length: enriched → mb_data.length_ms (mb_data wins)
+        # Titel-Länge: mb_data.length_ms → enriched.track_length (MB hat Vorrang)
         length = None
         if mb_data and mb_data.length_ms is not None:
             length = mb_data.length_ms
@@ -274,7 +333,7 @@ class ID3Tagger(TrackTagger):
         audio.add(COMM(encoding=3, lang="eng", desc="", text="Recorded via radiostream"))
         audio.add(TXXX(encoding=3, desc="RIPPEDBY", text=provenance))
 
-        # iTunes metadata
+        # ── 3. iTunes-Metadaten ──
         it = enriched.itunes_data
         if it:
             if it.track_id is not None:
@@ -296,7 +355,7 @@ class ID3Tagger(TrackTagger):
             if it.explicitness:
                 audio.add(TXXX(encoding=3, desc="ITunesExplicitness", text=it.explicitness))
 
-        # Fingerprint
+        # ── 4. Fingerprint ──
         if recording_id:
             audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=recording_id))
         audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
@@ -321,18 +380,16 @@ class ID3Tagger(TrackTagger):
             if mb_data.barcode:
                 audio.add(TXXX(encoding=3, desc="Barcode", text=mb_data.barcode))
 
-        # Cover art
-        effective_cover = cover_bytes or fallback_cover
-        if effective_cover:
-            _embed_apic(audio, effective_cover, 3, "Cover")
-
+        # ── 5. Cover-Artwork ──
+        if cover_bytes:
+            _embed_apic(audio, cover_bytes, 3, "Cover")
         if artist_image is not None:
             _embed_apic(audio, artist_image, 8, "Performer")
 
-        # Lyrics
+        # ── 6. Liedtexte ──
         if lyrics:
             audio.add(USLT(encoding=1, lang="eng", desc="", text=lyrics))
             audio.add(TXXX(encoding=1, desc="Lyrics", text=lyrics))
 
 
-__all__ = ["ID3Tagger", "TrackTagger", "_scale_cover"]
+__all__ = ["ID3Tagger", "TrackTagger", "read_acoustid_score"]

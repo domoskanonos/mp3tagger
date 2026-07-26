@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run(settings: Settings, logger: logging.Logger) -> int:
+async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -114,7 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("=== Radio-Ripper %s (tag mode) ===", __version__)
 
     try:
-        return asyncio.run(_run(settings, logger))
+        return asyncio.run(_run_pipeline(settings, logger))
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt — shut down.")
         return 0

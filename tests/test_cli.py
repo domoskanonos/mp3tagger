@@ -19,7 +19,7 @@ class TestCli:
     def test_minimal_config_path(self, tmp_path: Path):
         cfg = tmp_path / "cfg.json"
         cfg.write_text('{"destination":"' + str(tmp_path / "rec") + '"}')
-        with patch("radio_ripper.cli._run") as mock:
+        with patch("radio_ripper.cli._run_pipeline") as mock:
             main(["--config", str(cfg)])
         mock.assert_called_once()
 

@@ -1,13 +1,9 @@
-"""Tests for radio_ripper.services.storage (tag — path utilities)."""
+"""Tests for radio_ripper.services.file_utils."""
 
 from __future__ import annotations
 
-from radio_ripper.services.storage import (
-    compute_file_path,
-    read_acoustid_score,
-    remove_empty_parents,
-    sanitize_filename,
-)
+from radio_ripper.services.file_utils import compute_file_path, remove_empty_parents, sanitize_filename
+from radio_ripper.services.tagging import read_acoustid_score
 
 
 class TestSanitizeFilename:

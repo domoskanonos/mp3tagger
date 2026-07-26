@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from radio_ripper.services.popularity import DeezerPopularityChecker, maybe_delete_obscure
+from radio_ripper.services.popularity import DeezerPopularityChecker, maybe_delete_unpopular
 
 
 class _FakeClient:
@@ -102,7 +102,7 @@ class TestMaybeDeleteObscure:
     async def test_min_rank_zero_returns_false(self, tmp_path: Path):
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="A",
@@ -116,7 +116,7 @@ class TestMaybeDeleteObscure:
     async def test_min_rank_negative_returns_false(self, tmp_path: Path):
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="A",
@@ -129,7 +129,7 @@ class TestMaybeDeleteObscure:
     async def test_no_provider_returns_false(self, tmp_path: Path):
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="A",
@@ -142,7 +142,7 @@ class TestMaybeDeleteObscure:
     async def test_no_artist_and_no_title_returns_false(self, tmp_path: Path):
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="",
@@ -157,7 +157,7 @@ class TestMaybeDeleteObscure:
         provider.get_rank.return_value = None
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="A",
@@ -172,7 +172,7 @@ class TestMaybeDeleteObscure:
         provider.get_rank.return_value = 100
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="A",
@@ -187,7 +187,7 @@ class TestMaybeDeleteObscure:
         provider.get_rank.return_value = 10
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="A",
@@ -209,7 +209,7 @@ class TestMaybeDeleteObscure:
 
         monkeypatch.setattr(Path, "unlink", _fail_unlink)
 
-        result = await maybe_delete_obscure(
+        result = await maybe_delete_unpopular(
             file_path=fp,
             station_name="Test",
             artist="A",

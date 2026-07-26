@@ -23,25 +23,26 @@ from radio_ripper.services.fingerprint import (
 )
 from radio_ripper.services.lyrics import LyricsProvider
 from radio_ripper.services.metadata import CoverArtProvider, MetadataProvider
-from radio_ripper.services.popularity import PopularityProvider, maybe_delete_obscure
-from radio_ripper.services.storage import (
-    compute_file_path,
-    read_acoustid_score,
-    safe_unlink,
-)
-from radio_ripper.services.tagging import TrackTagger
+from radio_ripper.services.popularity import PopularityProvider, maybe_delete_unpopular
+from radio_ripper.services.file_utils import compute_file_path, safe_unlink
+from radio_ripper.services.tagging import TrackTagger, read_acoustid_score
 
 
 # ── helpers ──
 
 
-def _untested_rename(
+def _strip_untested_suffix(
     file_path: Path,
     logger: logging.Logger,
     station_name: str,
     *,
     on_fail: str | None = None,
 ) -> Path | None:
+    """Entfernt den ``.untested``-Suffix aus einer Datei.
+
+    AcoustID hängt ``.untested`` an Dateien an, die noch nicht gematcht wurden.
+    Dieses benennt sie zurück zu ``.mp3``, sobald ein Match vorliegt.
+    """
     new_path = file_path.with_name(file_path.stem.replace(".untested", "") + ".mp3")
     if file_path == new_path:
         return file_path
@@ -67,6 +68,11 @@ def correct_fingerprint_result(
     result: FingerprintResult,
     mb_data: MusicBrainzData | None,
 ) -> FingerprintResult:
+    """Korrigiert Artist/Title anhand der MusicBrainz-Daten.
+
+    AcoustID vertauscht manchmal Künstler und Titel. MusicBrainz gilt als
+    kanonische Quelle — wenn MB abweichende Daten hat, gewinnen diese.
+    """
     if mb_data and mb_data.recording_artist and mb_data.recording_title:
         if (
             result.artist.lower() != mb_data.recording_artist.lower()
@@ -104,6 +110,12 @@ async def _fetch_cover_data(
     station_name: str,
     logger: logging.Logger,
 ) -> tuple[bytes | None, MusicBrainzData | None, bytes | None]:
+    """Holt Cover (CAA), MB-Metadaten und Künstlerbild parallel ab.
+
+    Alle drei API-Aufrufe sind unabhängig und laufen gleichzeitig.
+    Fehler werden einzeln abgefangen — ein fehlschlagender Aufruf
+    blockiert die anderen nicht.
+    """
 
     async def _fetch_cover() -> bytes | None:
         try:
@@ -406,14 +418,14 @@ class FileProcessor:
             delete_old = final_path
 
         # ── Rename .untested.mp3 → .mp3 ──
-        stage_path = _untested_rename(work_path, self._log, self._name, on_fail="")
+        stage_path = _strip_untested_suffix(work_path, self._log, self._name, on_fail="")
         if stage_path is None:
             self._cleanup_file(work_path)
             return
 
         # ── Popularität (Deezer) – löscht Datei bei zu unbekannt ──
         if self._settings.min_popularity_rank > 0 and self._popularity and (result.artist or result.title):
-            deleted = await maybe_delete_obscure(
+            deleted = await maybe_delete_unpopular(
                 file_path=stage_path,
                 station_name=self._name,
                 artist=result.artist,

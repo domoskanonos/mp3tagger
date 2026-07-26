@@ -91,7 +91,7 @@ class TestID3Tagger:
         tagger = ID3Tagger()
         track = TrackInfo("A - B", "A", "B")
         with patch.object(ID3, "save", side_effect=OSError("disk full")):
-            with pytest.raises(TaggingError, match="failed to save tags"):
+            with pytest.raises(TaggingError, match="Speichern fehlgeschlagen"):
                 tagger.write_all(f, track, "S@u")
 
 

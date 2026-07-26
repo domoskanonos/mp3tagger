@@ -1,7 +1,7 @@
-"""Popularity check via public Deezer API.
+"""Popularitäts-Prüfung über die öffentliche Deezer-API.
 
-Used to delete tracks that don't meet a minimum popularity threshold.
-No API key required — Deezer's search endpoint is public.
+Löscht Tracks, die einen Mindest-Popularitätsrang unterschreiten.
+Kein API-Key nötig — Deezer's Such-Endpunkt ist öffentlich.
 """
 
 from __future__ import annotations
@@ -14,28 +14,29 @@ import httpx
 
 from radio_ripper.infra.http import AsyncHttpClient
 from radio_ripper.infra.resilience import retry_async
-from radio_ripper.services.storage import safe_unlink
+from radio_ripper.services.file_utils import safe_unlink
 
 _LOGGER = logging.getLogger("radio_ripper.popularity")
 _DELAY = 0.2
 
 
 class PopularityProvider(ABC):
-    """Check track popularity and fetch artist images."""
+    """Prüft Track-Popularität und liefert Künstler-Bilder."""
 
     @abstractmethod
     async def get_rank(self, artist: str, title: str) -> int | None:
-        """Return Deezer popularity rank or ``None`` on failure."""
+        """Deezer-Popularitätsrang (je höher desto bekannter) oder ``None``."""
 
     @abstractmethod
     async def fetch_artist_image(self, artist: str) -> bytes | None:
-        """Return artist portrait bytes or ``None``."""
+        """Künstler-Porträt als Bytes oder ``None``."""
 
 
 class DeezerPopularityChecker(PopularityProvider):
-    """Check track popularity and fetch artist images via the public Deezer API.
+    """Ermittelt Popularität über die öffentliche Deezer-Suche.
 
-    No API key required — Deezer's search endpoint is public.
+    Sucht nach ``Künstler "Titel"`` und extrahiert den ``rank``-Wert
+    aus dem ersten Treffer. Kein API-Key erforderlich.
     """
 
     _SEARCH_URL = "https://api.deezer.com/search"
@@ -59,7 +60,7 @@ class DeezerPopularityChecker(PopularityProvider):
         return int(rank) if rank is not None else None
 
     async def fetch_artist_image(self, artist: str) -> bytes | None:
-        """Search Deezer for *artist* and return the artist picture bytes."""
+        """Deezer-Künstlerbild abrufen."""
         if not artist:
             return None
         try:
@@ -82,7 +83,7 @@ class DeezerPopularityChecker(PopularityProvider):
             return None
 
 
-async def maybe_delete_obscure(
+async def maybe_delete_unpopular(
     *,
     file_path: Path,
     station_name: str,
@@ -92,10 +93,10 @@ async def maybe_delete_obscure(
     popularity_provider: PopularityProvider | None,
     logger: logging.Logger = _LOGGER,
 ) -> bool:
-    """Check popularity and delete *file_path* if below threshold.
+    """Löscht *file_path*, wenn der Deezer-Rang unter *min_rank* liegt.
 
-    Returns ``True`` when the file was deleted.
-    Best-effort — failures are logged and never reraised.
+    Die Prüfung ist "best effort" — Fehler werden geloggt, nie weitergereicht.
+    Gibt ``True`` zurück, wenn die Datei gelöscht wurde.
     """
     if min_rank <= 0 or popularity_provider is None:
         return False
@@ -121,7 +122,7 @@ async def maybe_delete_obscure(
     safe_unlink(file_path)
 
     logger.warning(
-        "[%s] Deleted obscure track (rank=%d < min=%d): %s",
+        "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
         station_name,
         rank,
         min_rank,
@@ -133,5 +134,5 @@ async def maybe_delete_obscure(
 __all__ = [
     "DeezerPopularityChecker",
     "PopularityProvider",
-    "maybe_delete_obscure",
+    "maybe_delete_unpopular",
 ]
