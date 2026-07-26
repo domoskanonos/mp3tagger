@@ -17,6 +17,7 @@ from radio_ripper.infra.errors import ConfigurationError
 from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.infra.logging import configure_logging
 from radio_ripper.services.fingerprint import AcoustidFingerprintProvider
+from radio_ripper.services.lyrics import LRCLibProvider
 from radio_ripper.services.metadata import CoverArtArchiveProvider, ITunesMetadataProvider
 from radio_ripper.services.popularity import DeezerPopularityChecker, PopularityProvider
 from radio_ripper.services.processor import FileProcessor
@@ -58,6 +59,8 @@ async def _run(settings: Settings, logger: logging.Logger) -> int:
     if settings.enable_coverartarchive:
         cover_archive = CoverArtArchiveProvider(client, timeout=settings.cover_timeout)
 
+    lyrics_provider = LRCLibProvider(client, timeout=5.0)
+
     proc = FileProcessor(
         inbox=inbox,
         temp_dir=settings.work_dir / "failed",
@@ -69,6 +72,7 @@ async def _run(settings: Settings, logger: logging.Logger) -> int:
         poll_interval=2.0,
         cover_provider=cover_archive,
         popularity_provider=popularity,
+        lyrics_provider=lyrics_provider,
         logger=logger,
     )
 

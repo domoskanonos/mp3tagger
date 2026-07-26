@@ -9,31 +9,148 @@ No database involved — files are either perfect (in destination/) or deleted.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import shutil
 from pathlib import Path
 
-from radio_ripper.domain.models import EnrichedInfo, MusicBrainzData, TrackInfo
+from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, MusicBrainzData, TrackInfo
 from radio_ripper.infra.config import Settings
-from radio_ripper.infra.http import HttpxAsyncClient
-from radio_ripper.services.base_processor import BaseInboxProcessor
 from radio_ripper.services.fingerprint import (
     FingerprintError,
     FingerprintProvider,
     NonRetriableFingerprintError,
 )
-from radio_ripper.services.lyrics import LRCLibProvider
+from radio_ripper.services.lyrics import LyricsProvider
 from radio_ripper.services.metadata import CoverArtProvider, MetadataProvider
 from radio_ripper.services.popularity import PopularityProvider, maybe_delete_obscure
 from radio_ripper.services.storage import (
     compute_file_path,
     read_acoustid_score,
-    remove_empty_parents,
+    safe_unlink,
 )
-from radio_ripper.services.repository import NullTrackRepository
 from radio_ripper.services.tagging import TrackTagger
 
 
-class FileProcessor(BaseInboxProcessor):
+# ── helpers ──
+
+
+def _untested_rename(
+    file_path: Path,
+    logger: logging.Logger,
+    station_name: str,
+    *,
+    on_fail: str | None = None,
+) -> Path | None:
+    new_path = file_path.with_name(file_path.stem.replace(".untested", "") + ".mp3")
+    if file_path == new_path:
+        return file_path
+    if new_path.exists():
+        logger.warning(
+            "[%s] Refuse to rename %s -> %s (target exists).%s",
+            station_name, file_path.name, new_path.name,
+            on_fail or " Keeping .untested.mp3 for manual review.",
+        )
+        return None
+    try:
+        file_path.rename(new_path)
+        return new_path
+    except OSError as exc:
+        logger.warning(
+            "[%s] rename %s -> %s failed: %s",
+            station_name, file_path.name, new_path.name, exc,
+        )
+        return None
+
+
+def correct_fingerprint_result(
+    result: FingerprintResult,
+    mb_data: MusicBrainzData | None,
+) -> FingerprintResult:
+    if mb_data and mb_data.recording_artist and mb_data.recording_title:
+        if (
+            result.artist.lower() != mb_data.recording_artist.lower()
+            or result.title.lower() != mb_data.recording_title.lower()
+        ):
+            return FingerprintResult(
+                artist=mb_data.recording_artist,
+                title=mb_data.recording_title,
+                score=result.score,
+                recording_id=result.recording_id,
+            )
+    return result
+
+
+async def _fetch_artist_image(
+    popularity_provider: PopularityProvider,
+    artist: str,
+    station_name: str,
+    logger: logging.Logger,
+) -> bytes | None:
+    try:
+        img = await popularity_provider.fetch_artist_image(artist)
+        if img is not None:
+            return img
+    except Exception as exc:
+        logger.debug("[%s] artist image fetch failed: %s", station_name, exc)
+    return None
+
+
+async def _fetch_cover_data(
+    cover_provider: CoverArtProvider,
+    recording_id: str,
+    popularity_provider: PopularityProvider | None,
+    artist: str,
+    station_name: str,
+    logger: logging.Logger,
+) -> tuple[bytes | None, MusicBrainzData | None, bytes | None]:
+
+    async def _fetch_cover() -> bytes | None:
+        try:
+            return await cover_provider.fetch_cover_by_recording_id(recording_id)
+        except Exception as exc:
+            logger.debug("[%s] CAA cover lookup failed: %s", station_name, exc)
+            return None
+
+    async def _fetch_mb() -> MusicBrainzData | None:
+        try:
+            d = await cover_provider.fetch_recording_data(recording_id)
+            if d and d.release_label:
+                logger.info("[%s] MB label: %s", station_name, d.release_label)
+            return d
+        except Exception as exc:
+            logger.debug("[%s] MB recording data lookup failed: %s", station_name, exc)
+            return None
+
+    tasks = [_fetch_cover(), _fetch_mb()]
+    if popularity_provider is not None and artist:
+        tasks.append(_fetch_artist_image(popularity_provider, artist, station_name, logger))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return (
+        results[0] if not isinstance(results[0], BaseException) else None,
+        results[1] if not isinstance(results[1], BaseException) else None,
+        results[2] if len(results) > 2 and not isinstance(results[2], BaseException) else None,
+    )
+
+
+async def _fetch_lyrics(
+    provider: LyricsProvider,
+    artist: str,
+    title: str,
+    logger: logging.Logger,
+    name: str,
+) -> str | None:
+    try:
+        return await provider.fetch(artist, title)
+    except Exception as exc:
+        logger.debug("[%s] Lyrics fetch failed: %s", name, exc)
+        return None
+
+
+# ── processor ──
+
+
+class FileProcessor:
     """Single-worker inbox processor.
 
     Polls *inbox* for ``.mp3`` files, processes each sequentially:
@@ -61,16 +178,97 @@ class FileProcessor(BaseInboxProcessor):
         poll_interval: float = 5.0,
         cover_provider: CoverArtProvider | None = None,
         popularity_provider: PopularityProvider | None = None,
+        lyrics_provider: LyricsProvider | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        super().__init__(inbox, temp_dir, name=name, poll_interval=poll_interval, logger=logger)
+        self._inbox = inbox
+        self._temp_dir = temp_dir
+        self._name = name
+        self._poll_interval = poll_interval
+        self._log = logger or logging.getLogger(f"radio_ripper.{name}")
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
         self._settings = settings
         self._fingerprint = fingerprint_provider
         self._metadata = metadata_provider
         self._tagger = tagger
         self._cover_provider = cover_provider
         self._popularity = popularity_provider
-        self._null_repo = NullTrackRepository()
+        self._lyrics_provider = lyrics_provider
+
+    # ── public lifecycle ──
+
+    async def start(self) -> None:
+        self._inbox.mkdir(parents=True, exist_ok=True)
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+
+    # ── polling loop ──
+
+    async def _run(self) -> None:
+        self._log.info(
+            "%s started — polling %s every %.0fs",
+            self._name.title(),
+            self._inbox,
+            self._poll_interval,
+        )
+        while not self._stop_event.is_set():
+            try:
+                await self._drain_inbox()
+            except Exception:
+                self._log.exception("%s inbox scan failed", self._name.title())
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_interval)
+        self._log.info("%s stopped", self._name.title())
+
+    async def _drain_inbox(self) -> None:
+        for mp3 in sorted(self._inbox.glob("*.mp3")):
+            if self._stop_event.is_set():
+                return
+            try:
+                await self._process_one(mp3)
+            except Exception:
+                self._log.exception("Unexpected error processing %s", mp3)
+
+    async def _process_one(self, mp3_path: Path) -> None:
+        proc_path = mp3_path.with_suffix(".processing")
+        try:
+            mp3_path.rename(proc_path)
+        except OSError:
+            self._log.warning("Cannot rename %s (concurrent access?) — skipping", mp3_path)
+            return
+
+        try:
+            await self._process_file(proc_path)
+        except Exception:
+            self._log.exception("Failed to process %s", proc_path.name)
+            self._cleanup_file(proc_path)
+
+    # ── helpers ──
+
+    def _move_to_temp(self, path: Path) -> None:
+        self._temp_dir.mkdir(parents=True, exist_ok=True)
+        dest = self._temp_dir / path.name
+        if dest.suffix == ".processing":
+            dest = dest.with_suffix(".mp3")
+        try:
+            shutil.move(str(path), str(dest))
+            self._log.info("Moved %s → %s", path.name, dest)
+        except OSError:
+            self._log.exception("Failed to move %s to temp", path)
+
+    def _cleanup_file(self, path: Path) -> None:
+        safe_unlink(path)
+
+    # ── main file processing ──
 
     async def _process_file(self, proc_path: Path) -> None:
         # ── Move .processing from inbox to work_dir for safe staging ──
@@ -116,21 +314,21 @@ class FileProcessor(BaseInboxProcessor):
             self._cleanup_file(work_path)
             return
 
-        # ── Phase 1: CAA + MB parallel (nur recording_id-abhängig) ──
+        # ── Phase 1: CAA + MB + Deezer Artist Image parallel ──
         mb_data: MusicBrainzData | None = None
         cover_from_caa: bytes | None = None
+        _artist_img_for_caa: bytes | None = None
         if self._cover_provider and result.recording_id:
-            tasks: list = [
-                self._cover_provider.fetch_cover_by_recording_id(result.recording_id),
-                self._cover_provider.fetch_recording_data(result.recording_id),
-            ]
-            cov_results = await asyncio.gather(*tasks, return_exceptions=True)
-            cover_from_caa = cov_results[0] if not isinstance(cov_results[0], BaseException) else None
-            mb_data = cov_results[1] if not isinstance(cov_results[1], BaseException) else None
+            cover_from_caa, mb_data, _artist_img_for_caa = await _fetch_cover_data(
+                self._cover_provider,
+                result.recording_id,
+                self._popularity,
+                result.artist or "",
+                self._name,
+                self._log,
+            )
 
         # ── Phase 2: MB-Korrektur (Artist/Title Swap-Fix, MB ist kanonisch) ──
-        from radio_ripper.services.track_processing import correct_fingerprint_result
-
         corrected = correct_fingerprint_result(result, mb_data)
         if corrected is not result:
             self._log.info(
@@ -158,13 +356,13 @@ class FileProcessor(BaseInboxProcessor):
             except Exception:
                 self._log.debug("[%s] iTunes enrichment failed for %s", self._name, work_path.name)
 
-        async def _fetch_lyrics() -> None:
+        async def _fetch_lyrics_wrapper() -> None:
             nonlocal lyrics
-            try:
-                lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
-                lyrics = await lyrics_provider.fetch(track.artist, track.title)
-            except Exception:
-                self._log.debug("[%s] Lyrics fetch failed for %s", self._name, work_path.name)
+            if self._lyrics_provider is None:
+                return
+            lyrics = await _fetch_lyrics(
+                self._lyrics_provider, track.artist, track.title, self._log, self._name,
+            )
 
         async def _fetch_artist_image() -> None:
             nonlocal artist_image
@@ -175,7 +373,7 @@ class FileProcessor(BaseInboxProcessor):
             except Exception:
                 self._log.debug("[%s] Artist image failed for %s", self._name, work_path.name)
 
-        await asyncio.gather(_fetch_itunes(), _fetch_lyrics(), _fetch_artist_image())
+        await asyncio.gather(_fetch_itunes(), _fetch_lyrics_wrapper(), _fetch_artist_image())
 
         # ── Phase 4: Ziel-Pfad berechnen + Score-basierte Entscheidung ──
         provenance = f"{self._name}/{self._name}"
@@ -209,36 +407,21 @@ class FileProcessor(BaseInboxProcessor):
             )
             delete_old = final_path
 
-        # ── Rename .processing → .mp3 ──
-        stage_path = work_path
-        new_path = work_path.with_name(work_path.stem.replace(".untested", "") + ".mp3")
-        if new_path != work_path:
-            if new_path.exists():
-                self._log.warning(
-                    "[%s] Refuse to rename %s -> %s (target exists).",
-                    self._name, work_path.name, new_path.name,
-                )
-                self._cleanup_file(work_path)
-                return
-            try:
-                work_path.rename(new_path)
-                stage_path = new_path
-            except OSError as exc:
-                self._log.warning("[%s] rename failed: %s", self._name, exc)
-                self._cleanup_file(work_path)
-                return
+        # ── Rename .untested.mp3 → .mp3 ──
+        stage_path = _untested_rename(work_path, self._log, self._name, on_fail="")
+        if stage_path is None:
+            self._cleanup_file(work_path)
+            return
 
         # ── Popularität (Deezer) – löscht Datei bei zu unbekannt ──
         if self._settings.min_popularity_rank > 0 and self._popularity and (result.artist or result.title):
             deleted = await maybe_delete_obscure(
                 file_path=stage_path,
                 station_name=self._name,
-                stream_title=stream_title,
                 artist=result.artist,
                 title=result.title,
                 min_rank=self._settings.min_popularity_rank,
                 popularity_provider=self._popularity,
-                repository=self._null_repo,
                 logger=self._log,
             )
             if deleted:
@@ -289,11 +472,7 @@ class FileProcessor(BaseInboxProcessor):
                 "[DELETE] %s — Grund: durch bessere Version ersetzt",
                 delete_old.name,
             )
-            delete_old.unlink(missing_ok=True)
-            remove_empty_parents(delete_old, self._settings.destination)
-
-    async def _on_processing_error(self, proc_path: Path) -> None:
-        self._cleanup_file(proc_path)
+            safe_unlink(delete_old, parents_root=self._settings.destination)
 
 
 __all__ = ["FileProcessor"]

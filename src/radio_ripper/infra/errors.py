@@ -39,15 +39,11 @@ class TaggingError(RadioRipperError):
     """Writing ID3 tags to a file failed."""
 
 
-class RepositoryError(RadioRipperError):
-    """A database operation failed."""
-
 
 __all__ = [
     "ConfigurationError",
     "MetadataProviderError",
     "RadioRipperError",
-    "RepositoryError",
     "StreamConnectionError",
     "StreamError",
     "StreamInterruptedError",

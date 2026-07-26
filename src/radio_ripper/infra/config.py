@@ -15,7 +15,6 @@ class Settings(BaseModel):
 
     destination: Path = Field(default=Path("./recordings"))
     work_dir: Path = Field(default=Path("./work"))
-    database: Path | None = None
 
     log_level: str = "INFO"
     log_file: Path | None = None
@@ -37,15 +36,13 @@ class Settings(BaseModel):
             raise ValueError(f"invalid log_level: {v}")
         return v
 
-    @field_validator("work_dir", "database", "destination", "log_file", "fallback_cover_path", "mp3_inbox")
+    @field_validator("work_dir", "destination", "log_file", "fallback_cover_path", "mp3_inbox")
     @classmethod
     def _expand(cls, v: Path | None) -> Path | None:
         return v.expanduser() if v is not None else None
 
     @model_validator(mode="after")
     def _resolve_work_paths(self) -> Settings:
-        if self.database is None:
-            self.database = self.work_dir / "ripper.db"
         if self.log_file is None:
             self.log_file = self.work_dir / "radio_ripper.log"
         if self.mp3_inbox is None:

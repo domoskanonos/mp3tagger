@@ -456,7 +456,7 @@ class TestID3TaggerEmbedCover:
 
     def test_load_error_raises_tagging_error(self):
         tagger = ID3Tagger()
-        with pytest.raises(TaggingError, match="failed to load .* for cover embed"):
+        with pytest.raises(TaggingError, match="failed to load .* for Cover"):
             tagger.embed_cover(Path("/nonexistent/song.mp3"), b"cover")
 
     def test_save_error_raises_tagging_error(self, tmp_path: Path):
@@ -464,7 +464,7 @@ class TestID3TaggerEmbedCover:
         _write_blank_mp3(f)
         tagger = ID3Tagger()
         with patch.object(ID3, "save", side_effect=OSError("disk full")):
-            with pytest.raises(TaggingError, match="failed to save cover"):
+            with pytest.raises(TaggingError, match="failed to save Cover"):
                 tagger.embed_cover(f, b"\xff\xd8\xff\xe0" + b"\x00" * 20)
 
 
@@ -517,7 +517,7 @@ class TestID3TaggerWriteArtistImage:
 
     def test_load_error_raises_tagging_error(self):
         tagger = ID3Tagger()
-        with pytest.raises(TaggingError, match="failed to load .* for artist image"):
+        with pytest.raises(TaggingError, match="failed to load .* for Performer"):
             tagger.write_artist_image(Path("/nonexistent/song.mp3"), b"x")
 
     def test_save_error_raises_tagging_error(self, tmp_path: Path):
@@ -525,7 +525,7 @@ class TestID3TaggerWriteArtistImage:
         _write_blank_mp3(f)
         tagger = ID3Tagger()
         with patch.object(ID3, "save", side_effect=OSError("disk full")):
-            with pytest.raises(TaggingError, match="failed to save artist image"):
+            with pytest.raises(TaggingError, match="failed to save Performer"):
                 tagger.write_artist_image(f, b"\xff\xd8\xff\xe0" + b"\x00" * 20)
 
 

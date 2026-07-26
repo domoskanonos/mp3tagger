@@ -74,8 +74,15 @@ def remux_mp3(path: Path) -> None:
     except ImportError:
         pass
     except Exception:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
+        safe_unlink(tmp)
+
+
+def safe_unlink(path: Path, *, parents_root: Path | None = None) -> None:
+    """Remove *path* and optionally its empty ancestor directories up to *parents_root*."""
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+        if parents_root is not None:
+            remove_empty_parents(path, parents_root)
 
 
 def remove_empty_parents(file_path: Path, root: Path) -> None:
@@ -93,5 +100,6 @@ __all__ = [
     "read_acoustid_score",
     "remove_empty_parents",
     "remux_mp3",
+    "safe_unlink",
     "sanitize_filename",
 ]

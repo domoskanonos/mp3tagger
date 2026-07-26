@@ -106,31 +106,10 @@ class FingerprintResult:
     recording_id: str
 
 
-@dataclass(slots=True)
-class SavedTrack:
-    """A track that has been successfully recorded and written to disk."""
-
-    stream_title: str
-    artist: str
-    title: str
-    file_path: str
-    file_size: int
-    album: str | None = None
-    year: str | None = None
-    has_cover: bool = False
-    enrichment: str | None = None
-    acoustid_recording_id: str | None = None
-    acoustid_score: float | None = None
-    label: str | None = None
-    track_number: int | None = None
-    disc_number: int | None = None
-
-
 __all__ = [
     "EnrichedInfo",
     "FingerprintResult",
     "ITunesTrackData",
     "MusicBrainzData",
-    "SavedTrack",
     "TrackInfo",
 ]

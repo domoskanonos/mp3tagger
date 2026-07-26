@@ -8,7 +8,6 @@ from radio_ripper.infra.errors import (
     ConfigurationError,
     MetadataProviderError,
     RadioRipperError,
-    RepositoryError,
     StreamConnectionError,
     StreamError,
     StreamInterruptedError,
@@ -26,7 +25,6 @@ from radio_ripper.infra.errors import (
         StreamInterruptedError,
         MetadataProviderError,
         TaggingError,
-        RepositoryError,
     ],
 )
 def test_all_inherit_base(exc_cls):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -10,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from radio_ripper.services.popularity import DeezerPopularityChecker, maybe_delete_obscure
-from radio_ripper.services.repository import TrackRepository
 
 
 class _FakeClient:
@@ -102,35 +100,29 @@ class TestDeezerPopularityChecker:
 
 class TestMaybeDeleteObscure:
     async def test_min_rank_zero_returns_false(self, tmp_path: Path):
-        repo = AsyncMock(spec=TrackRepository)
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="A - B",
             artist="A",
             title="B",
             min_rank=0,
             popularity_provider=AsyncMock(),
-            repository=repo,
         )
         assert result is False
         assert fp.exists()
 
     async def test_min_rank_negative_returns_false(self, tmp_path: Path):
-        repo = AsyncMock(spec=TrackRepository)
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="A - B",
             artist="A",
             title="B",
             min_rank=-1,
             popularity_provider=AsyncMock(),
-            repository=repo,
         )
         assert result is False
 
@@ -140,12 +132,10 @@ class TestMaybeDeleteObscure:
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="A - B",
             artist="A",
             title="B",
             min_rank=50,
             popularity_provider=None,
-            repository=AsyncMock(spec=TrackRepository),
         )
         assert result is False
 
@@ -155,12 +145,10 @@ class TestMaybeDeleteObscure:
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="",
             artist="",
             title="",
             min_rank=50,
             popularity_provider=AsyncMock(),
-            repository=AsyncMock(spec=TrackRepository),
         )
         assert result is False
 
@@ -172,12 +160,10 @@ class TestMaybeDeleteObscure:
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="A - B",
             artist="A",
             title="B",
             min_rank=50,
             popularity_provider=provider,
-            repository=AsyncMock(spec=TrackRepository),
         )
         assert result is False
 
@@ -189,39 +175,32 @@ class TestMaybeDeleteObscure:
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="A - B",
             artist="A",
             title="B",
             min_rank=50,
             popularity_provider=provider,
-            repository=AsyncMock(spec=TrackRepository),
         )
         assert result is False
 
     async def test_rank_below_min_deletes_and_returns_true(self, tmp_path: Path):
         provider = AsyncMock(spec=DeezerPopularityChecker)
         provider.get_rank.return_value = 10
-        repo = AsyncMock(spec=TrackRepository)
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="A - B",
             artist="A",
             title="B",
             min_rank=50,
             popularity_provider=provider,
-            repository=repo,
         )
         assert result is True
         assert not fp.exists()
-        repo.remove.assert_awaited_once_with("Test", "A - B")
 
     async def test_unlink_oserror_suppressed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         provider = AsyncMock(spec=DeezerPopularityChecker)
         provider.get_rank.return_value = 10
-        repo = AsyncMock(spec=TrackRepository)
         fp = tmp_path / "track.mp3"
         fp.write_bytes(b"data")
 
@@ -233,52 +212,9 @@ class TestMaybeDeleteObscure:
         result = await maybe_delete_obscure(
             file_path=fp,
             station_name="Test",
-            stream_title="A - B",
             artist="A",
             title="B",
             min_rank=50,
             popularity_provider=provider,
-            repository=repo,
         )
         assert result is True
-        repo.remove.assert_awaited_once_with("Test", "A - B")
-
-    async def test_repo_remove_exception_logged(self, tmp_path: Path):
-        provider = AsyncMock(spec=DeezerPopularityChecker)
-        provider.get_rank.return_value = 10
-        repo = AsyncMock(spec=TrackRepository)
-        repo.remove.side_effect = RuntimeError("db gone")
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_obscure(
-            file_path=fp,
-            station_name="Test",
-            stream_title="A - B",
-            artist="A",
-            title="B",
-            min_rank=50,
-            popularity_provider=provider,
-            repository=repo,
-        )
-        assert result is True
-        assert not fp.exists()
-
-    async def test_debug_log_when_repo_remove_fails(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.DEBUG, logger="radio_ripper.popularity")
-        provider = AsyncMock(spec=DeezerPopularityChecker)
-        provider.get_rank.return_value = 10
-        repo = AsyncMock(spec=TrackRepository)
-        repo.remove.side_effect = RuntimeError("db gone")
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        await maybe_delete_obscure(
-            file_path=fp,
-            station_name="Test",
-            stream_title="A - B",
-            artist="A",
-            title="B",
-            min_rank=50,
-            popularity_provider=provider,
-            repository=repo,
-        )
-        assert "db remove after popularity delete" in caplog.text

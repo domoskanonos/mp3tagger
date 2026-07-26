@@ -6,24 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from radio_ripper.services.repository import SQLiteTrackRepository
-
-
-@pytest.fixture
-def tmp_db_path(tmp_path: Path) -> Path:
-    """Return path to a fresh in-temp SQLite database file."""
-    return tmp_path / "test_ripper.db"
-
-
-@pytest.fixture
-async def sqlite_repo(tmp_db_path: Path) -> SQLiteTrackRepository:
-    """Provide a freshly initialised SQLiteTrackRepository and clean up after."""
-    repo = SQLiteTrackRepository(tmp_db_path)
-    try:
-        yield repo
-    finally:
-        await repo.aclose()
-
 
 @pytest.fixture
 def recordings_dir(tmp_path: Path) -> Path:

@@ -36,6 +36,16 @@ def _strip_parens(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned)
 
 
+async def _fetch_image(client: AsyncHttpClient, url: str, timeout: float) -> bytes | None:
+    try:
+        data = await client.get_bytes(url, timeout=timeout)
+    except Exception:
+        return None
+    if not data or len(data) < 64:
+        return None
+    return data
+
+
 class MetadataProvider(ABC):
     """Enrich track metadata (album, year, artwork) from an external source."""
 
@@ -116,13 +126,7 @@ class ITunesMetadataProvider(MetadataProvider):
         return results[0] if results else None
 
     async def download_image(self, url: str) -> bytes | None:
-        try:
-            data = await self._client.get_bytes(url, timeout=self._cover_timeout)
-        except Exception:
-            return None
-        if not data or len(data) < 64:
-            return None
-        return data
+        return await _fetch_image(self._client, url, self._cover_timeout)
 
     @staticmethod
     def _upgrade_artwork(url: str) -> str:
@@ -334,13 +338,7 @@ class CoverArtArchiveProvider(CoverArtProvider):
         return ((payload or {}).get("releases") or []) or None
 
     async def download_image(self, url: str) -> bytes | None:
-        try:
-            data = await self._client.get_bytes(url, timeout=self._timeout)
-        except Exception:
-            return None
-        if not data or len(data) < 64:
-            return None
-        return data
+        return await _fetch_image(self._client, url, self._timeout)
 
 
 __all__ = [

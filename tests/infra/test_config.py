@@ -20,7 +20,6 @@ def _write_config(tmp_path: Path, payload: dict | str) -> Path:
 
 GOOD_BASE = {
     "destination": "./recordings",
-    "database": "./recordings/ripper.db",
 }
 
 
@@ -52,11 +51,8 @@ class TestLoadSettings:
             load_settings(path)
 
     def test_work_paths_are_resolved(self, tmp_path: Path):
-        cfg = dict(GOOD_BASE)
-        del cfg["database"]
-        path = _write_config(tmp_path, cfg)
+        path = _write_config(tmp_path, {"destination": str(tmp_path / "rec")})
         s = load_settings(path)
-        assert s.database is not None
         assert s.log_file is not None
 
     def test_log_level_overrides(self, tmp_path: Path):

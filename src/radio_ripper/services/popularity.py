@@ -6,7 +6,6 @@ No API key required — Deezer's search endpoint is public.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -15,7 +14,7 @@ import httpx
 
 from radio_ripper.infra.http import AsyncHttpClient
 from radio_ripper.infra.resilience import retry_async
-from radio_ripper.services.repository import TrackRepository
+from radio_ripper.services.storage import safe_unlink
 
 _LOGGER = logging.getLogger("radio_ripper.popularity")
 _DELAY = 0.2
@@ -97,15 +96,13 @@ async def maybe_delete_obscure(
     *,
     file_path: Path,
     station_name: str,
-    stream_title: str,
     artist: str,
     title: str,
     min_rank: int,
     popularity_provider: PopularityProvider | None,
-    repository: TrackRepository,
     logger: logging.Logger = _LOGGER,
 ) -> bool:
-    """Check popularity and delete *file_path* + DB record if below threshold.
+    """Check popularity and delete *file_path* if below threshold.
 
     Returns ``True`` when the file was deleted.
     Best-effort — failures are logged and never reraised.
@@ -131,12 +128,7 @@ async def maybe_delete_obscure(
     if rank >= min_rank:
         return False
 
-    with contextlib.suppress(OSError):
-        file_path.unlink(missing_ok=True)
-    try:
-        await repository.remove(station_name, stream_title)
-    except Exception as exc:
-        logger.debug("[%s] db remove after popularity delete: %s", station_name, exc)
+    safe_unlink(file_path)
 
     logger.warning(
         "[%s] Deleted obscure track (rank=%d < min=%d): %s",
