@@ -68,22 +68,19 @@ def correct_fingerprint_result(
     result: FingerprintResult,
     mb_data: MusicBrainzData | None,
 ) -> FingerprintResult:
-    """Korrigiert Artist/Title anhand der MusicBrainz-Daten.
+    """Überschreibt AcoustID-Artist/Title mit MusicBrainz-Daten, wenn vorhanden.
 
-    AcoustID vertauscht manchmal Künstler und Titel. MusicBrainz gilt als
-    kanonische Quelle — wenn MB abweichende Daten hat, gewinnen diese.
+    AcoustID liefert oft nur grobe Metadaten oder hat Künstler/Titel
+    vertauscht. MusicBrainz ist die kanonische Quelle — wenn MB-Daten
+    existieren, werden sie immer bevorzugt.
     """
-    if mb_data and mb_data.recording_artist and mb_data.recording_title:
-        if (
-            result.artist.lower() != mb_data.recording_artist.lower()
-            or result.title.lower() != mb_data.recording_title.lower()
-        ):
-            return FingerprintResult(
-                artist=mb_data.recording_artist,
-                title=mb_data.recording_title,
-                score=result.score,
-                recording_id=result.recording_id,
-            )
+    if mb_data and mb_data.recording_artist:
+        return FingerprintResult(
+            artist=mb_data.recording_artist,
+            title=mb_data.recording_title or result.title,
+            score=result.score,
+            recording_id=result.recording_id,
+        )
     return result
 
 
