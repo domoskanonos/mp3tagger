@@ -359,21 +359,16 @@ class TestNullTagger:
         tagger.write_full(f, track, enriched, b"cover", "S@u")
         assert f.read_bytes() == original
 
-    def test_update_acoustid_noop(self):
-        tagger = NullTagger()
-        tagger.update_acoustid(Path("/nonexistent"), "abc", 0.95)
-        # should not raise
-
     def test_embed_cover_noop(self):
         tagger = NullTagger()
         tagger.embed_cover(Path("/nonexistent"), b"cover")
         # should not raise
 
-    def test_update_musicbrainz_metadata_noop(self):
-        from radio_ripper.domain.models import MusicBrainzData
-
+    def test_write_fingerprint_tags_noop(self):
         tagger = NullTagger()
-        tagger.update_musicbrainz_metadata(Path("/nonexistent"), MusicBrainzData(recording_id="x"))
+        tagger.write_fingerprint_tags(
+            Path("/nonexistent"), recording_id="abc", score=0.95
+        )
         # should not raise
 
     def test_write_lyrics_noop(self):
@@ -387,12 +382,12 @@ class TestNullTagger:
         # should not raise
 
 
-class TestID3TaggerUpdateAcoustid:
-    def test_adds_recording_id(self, tmp_path: Path):
+class TestID3TaggerWriteFingerprintTags:
+    def test_adds_acoustid_frames(self, tmp_path: Path):
         f = tmp_path / "song.mp3"
         _write_blank_mp3(f)
         tagger = ID3Tagger()
-        tagger.update_acoustid(f, "12345", 0.9876)
+        tagger.write_fingerprint_tags(f, recording_id="12345", score=0.9876)
         audio = ID3(f)
         assert audio.get("TXXX:MusicBrainz Recording Id").text == ["12345"]
         assert audio.get("TXXX:AcoustID Score").text == ["0.9876"]
@@ -401,7 +396,7 @@ class TestID3TaggerUpdateAcoustid:
         f = tmp_path / "song.mp3"
         _write_blank_mp3(f)
         tagger = ID3Tagger()
-        tagger.update_acoustid(f, "", 0.5)
+        tagger.write_fingerprint_tags(f, recording_id="", score=0.5)
         audio = ID3(f)
         assert "TXXX:MusicBrainz Recording Id" not in audio
         assert audio.get("TXXX:AcoustID Score").text == ["0.5"]
@@ -409,16 +404,16 @@ class TestID3TaggerUpdateAcoustid:
     def test_load_error_raises_tagging_error(self):
         tagger = ID3Tagger()
         f = Path("/nonexistent_dir/song.mp3")
-        with pytest.raises(TaggingError, match="failed to load .* for acoustid tag"):
-            tagger.update_acoustid(f, "id", 0.5)
+        with pytest.raises(TaggingError, match="failed to load .* for fingerprint tags"):
+            tagger.write_fingerprint_tags(f, recording_id="id", score=0.5)
 
     def test_save_error_raises_tagging_error(self, tmp_path: Path):
         f = tmp_path / "song.mp3"
         _write_blank_mp3(f)
         tagger = ID3Tagger()
         with patch.object(ID3, "save", side_effect=OSError("disk full")):
-            with pytest.raises(TaggingError, match="failed to save acoustid tags"):
-                tagger.update_acoustid(f, "id", 0.5)
+            with pytest.raises(TaggingError, match="failed to save fingerprint tags"):
+                tagger.write_fingerprint_tags(f, recording_id="id", score=0.5)
 
 
 class TestID3TaggerEmbedCover:
@@ -603,7 +598,7 @@ class TestWriteFullEdgeCases:
         assert audio.get("TPUB").text == ["LaFace Records"]
 
 
-class TestID3TaggerUpdateMusicBrainz:
+class TestID3TaggerWriteFingerprintTagsMBData:
     def test_writes_mb_metadata(self, tmp_path: Path):
         from radio_ripper.domain.models import MusicBrainzData
 
@@ -623,7 +618,7 @@ class TestID3TaggerUpdateMusicBrainz:
             release_group_type="Album",
             barcode="886972338828",
         )
-        tagger.update_musicbrainz_metadata(f, mb)
+        tagger.write_fingerprint_tags(f, mb_data=mb)
         audio = ID3(f)
         assert audio.get("TPUB").text == ["LaFace Records"]
         assert audio.get("TSRC").text == ["USRC10800123"]
@@ -643,7 +638,7 @@ class TestID3TaggerUpdateMusicBrainz:
         track = TrackInfo("A - B", "A", "B")
         tagger.write_full(f, track, EnrichedInfo(artist="A", title="B", track_length=259720), None, "S@u")
         mb = MusicBrainzData(recording_id="x", length_ms=261000)
-        tagger.update_musicbrainz_metadata(f, mb)
+        tagger.write_fingerprint_tags(f, mb_data=mb)
         audio = ID3(f)
         assert audio.get("TLEN").text == ["261000"]
 
@@ -652,8 +647,8 @@ class TestID3TaggerUpdateMusicBrainz:
 
         tagger = ID3Tagger()
         mb = MusicBrainzData(recording_id="x")
-        with pytest.raises(TaggingError, match="failed to load .* for MB metadata"):
-            tagger.update_musicbrainz_metadata(tmp_path / "no_dir" / "x.mp3", mb)
+        with pytest.raises(TaggingError, match="failed to load .* for fingerprint tags"):
+            tagger.write_fingerprint_tags(tmp_path / "no_dir" / "x.mp3", mb_data=mb)
 
 
 class TestEnrichAndTag:

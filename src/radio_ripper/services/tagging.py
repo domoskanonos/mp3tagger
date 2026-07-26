@@ -126,20 +126,8 @@ class TrackTagger(ABC):
         """Write enriched tags including album/year/genre and cover art."""
 
     @abstractmethod
-    def update_acoustid(self, file_path: Path, recording_id: str, score: float) -> None:
-        """Add AcoustID/MusicBrainz tags to an already-tagged file."""
-
-    @abstractmethod
     def embed_cover(self, file_path: Path, cover_bytes: bytes) -> None:
         """Embed cover-art bytes into an existing file (replaces any APIC)."""
-
-    @abstractmethod
-    def update_musicbrainz_metadata(
-        self,
-        file_path: Path,
-        mb_data: MusicBrainzData,
-    ) -> None:
-        """Write MusicBrainz metadata (TPUB, TSRC, TLEN, TXXX) after an AcoustID match."""
 
     @abstractmethod
     def write_fingerprint_tags(
@@ -166,6 +154,25 @@ class TrackTagger(ABC):
     def write_artist_image(self, file_path: Path, image_bytes: bytes) -> None:
         """Embed artist portrait into APIC type=8 (Cover (front) stays type=3)."""
 
+    @abstractmethod
+    def write_all(
+        self,
+        file_path: Path,
+        track: TrackInfo,
+        provenance: str,
+        *,
+        enriched: EnrichedInfo | None = None,
+        cover_bytes: bytes | None = None,
+        fallback_cover: bytes | None = None,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        artist_image: bytes | None = None,
+        lyrics: str | None = None,
+    ) -> None:
+        """Write ALL tags in one save. Combines basic, enriched, fingerprint,
+        cover art, artist image, and lyrics into a single mutagen save call."""
+
 
 def _load_or_create(file_path: Path) -> ID3:
     """Load an existing ID3 tag or create a fresh one.
@@ -188,6 +195,14 @@ class ID3Tagger(TrackTagger):
             audio = _load_or_create(file_path)
         except Exception as exc:
             raise TaggingError(f"failed to load {file_path}: {exc}") from exc
+        self._write_basic_to(audio, track, provenance)
+        try:
+            audio.save(file_path, v2_version=3, v1=2)
+        except Exception as exc:
+            raise TaggingError(f"failed to save basic tags to {file_path}: {exc}") from exc
+
+    @staticmethod
+    def _write_basic_to(audio: ID3, track: TrackInfo, provenance: str) -> None:
         audio.delall("TPE1")
         audio.delall("TPE2")
         audio.delall("TIT2")
@@ -201,19 +216,14 @@ class ID3Tagger(TrackTagger):
             audio.add(TPE2(encoding=3, text=track.artist))
         if track.title:
             audio.add(TIT2(encoding=3, text=track.title))
-        # Album fallback: prefer the song title (without artist) over empty,
-        # so the player doesn't fall back to the station name.
         audio.add(TALB(encoding=3, text=track.title or track.stream_title))
-        # Extract station name from provenance (format: "station@url")
         station_name = provenance.split("@")[0] if "@" in provenance else provenance
         audio.add(TRSN(encoding=3, text=station_name))
-        # TPUB intentionally omitted — written only when we have a real label
         audio.add(COMM(encoding=3, lang="eng", desc="", text="Recorded via radiostream"))
         audio.add(TXXX(encoding=3, desc="RIPPEDBY", text=provenance))
-        try:
-            audio.save(file_path, v2_version=3, v1=2)
-        except Exception as exc:
-            raise TaggingError(f"failed to save basic tags to {file_path}: {exc}") from exc
+
+    def _args_to_provenance(self, provenance: str) -> str:
+        return provenance.split("@")[0] if "@" in provenance else provenance
 
     def write_full(
         self,
@@ -229,6 +239,22 @@ class ID3Tagger(TrackTagger):
             audio = _load_or_create(file_path)
         except Exception as exc:
             raise TaggingError(f"failed to load {file_path}: {exc}") from exc
+        self._write_full_to(audio, track, enriched, cover_bytes, provenance, fallback_cover=fallback_cover)
+        try:
+            audio.save(file_path, v2_version=3, v1=2)
+        except Exception as exc:
+            raise TaggingError(f"failed to save enriched tags to {file_path}: {exc}") from exc
+
+    @staticmethod
+    def _write_full_to(
+        audio: ID3,
+        track: TrackInfo,
+        enriched: EnrichedInfo,
+        cover_bytes: bytes | None,
+        provenance: str,
+        *,
+        fallback_cover: bytes | None = None,
+    ) -> None:
         audio.delall("TPE1")
         audio.delall("TPE2")
         audio.delall("TIT2")
@@ -263,17 +289,13 @@ class ID3Tagger(TrackTagger):
         if enriched.album:
             audio.add(TALB(encoding=3, text=enriched.album))
         else:
-            # Fallback: prefer song title (no artist) over empty so the player
-            # doesn't fall back to the station name as album placeholder.
             audio.add(TALB(encoding=3, text=track.title or track.stream_title))
         if enriched.year:
             audio.add(TDRC(encoding=3, text=enriched.year))
         if enriched.genre:
             audio.add(TCON(encoding=3, text=enriched.genre))
-        # Extract station name from provenance (format: "station@url")
         station_name = provenance.split("@")[0] if "@" in provenance else provenance
         audio.add(TRSN(encoding=3, text=station_name))
-        # Label: only write when we have actual label data — never fall back to station name
         if enriched.label:
             audio.add(TPUB(encoding=3, text=enriched.label))
 
@@ -289,7 +311,6 @@ class ID3Tagger(TrackTagger):
         audio.add(COMM(encoding=3, lang="eng", desc="", text="Recorded via radiostream"))
         audio.add(TXXX(encoding=3, desc="RIPPEDBY", text=provenance))
 
-        # iTunes ancillary TXXX frames
         it = enriched.itunes_data
         if it:
             if it.track_id is not None:
@@ -316,25 +337,6 @@ class ID3Tagger(TrackTagger):
             if scaled is not None:
                 scaled_data, mime = scaled
                 audio.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=scaled_data))
-        try:
-            audio.save(file_path, v2_version=3, v1=2)
-        except Exception as exc:
-            raise TaggingError(f"failed to save enriched tags to {file_path}: {exc}") from exc
-
-    def update_acoustid(self, file_path: Path, recording_id: str, score: float) -> None:
-        try:
-            audio = _load_or_create(file_path)
-        except Exception as exc:
-            raise TaggingError(f"failed to load {file_path} for acoustid tag: {exc}") from exc
-        audio.delall("TXXX:MusicBrainz Recording Id")
-        audio.delall("TXXX:AcoustID Score")
-        if recording_id:
-            audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=recording_id))
-        audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
-        try:
-            audio.save(file_path, v2_version=3, v1=2)
-        except Exception as exc:
-            raise TaggingError(f"failed to save acoustid tags to {file_path}: {exc}") from exc
 
     def embed_cover(self, file_path: Path, cover_bytes: bytes) -> None:
         """Replace any existing APIC frame with the supplied cover bytes."""
@@ -368,60 +370,6 @@ class ID3Tagger(TrackTagger):
         except Exception as exc:
             raise TaggingError(f"failed to save artist image to {file_path}: {exc}") from exc
 
-    def update_musicbrainz_metadata(
-        self,
-        file_path: Path,
-        mb_data: MusicBrainzData,
-    ) -> None:
-        try:
-            audio = _load_or_create(file_path)
-        except Exception as exc:
-            raise TaggingError(f"failed to load {file_path} for MB metadata: {exc}") from exc
-        audio.delall("TSRC")
-        audio.delall("TLEN")
-        audio.delall("TXXX:MusicBrainz Release Id")
-        audio.delall("TXXX:MusicBrainz Release Group Type")
-        audio.delall("TXXX:MusicBrainz Genres")
-        audio.delall("TXXX:MusicBrainz Release Title")
-        audio.delall("TXXX:MusicBrainz Release Date")
-        audio.delall("TXXX:MusicBrainz Album Release Country")
-        audio.delall("TXXX:CatalogNumber")
-        audio.delall("TXXX:Barcode")
-
-        if mb_data.release_label:
-            audio.delall("TPUB")
-            audio.add(TPUB(encoding=3, text=mb_data.release_label))
-        if mb_data.release_title:
-            audio.add(TXXX(encoding=3, desc="MusicBrainz Release Title", text=mb_data.release_title))
-        if mb_data.release_date:
-            audio.add(TXXX(encoding=3, desc="MusicBrainz Release Date", text=mb_data.release_date))
-        if mb_data.release_country:
-            audio.add(TXXX(encoding=3, desc="MusicBrainz Album Release Country", text=mb_data.release_country))
-        if mb_data.isrcs:
-            audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
-        if mb_data.length_ms is not None:
-            audio.add(TLEN(encoding=3, text=str(mb_data.length_ms)))
-        if mb_data.release_id:
-            audio.add(TXXX(encoding=3, desc="MusicBrainz Release Id", text=mb_data.release_id))
-        if mb_data.release_group_type:
-            audio.add(
-                TXXX(
-                    encoding=3,
-                    desc="MusicBrainz Release Group Type",
-                    text=mb_data.release_group_type,
-                )
-            )
-        if mb_data.genres:
-            audio.add(TXXX(encoding=3, desc="MusicBrainz Genres", text=", ".join(mb_data.genres)))
-        if mb_data.release_catalog_no:
-            audio.add(TXXX(encoding=3, desc="CatalogNumber", text=mb_data.release_catalog_no))
-        if mb_data.barcode:
-            audio.add(TXXX(encoding=3, desc="Barcode", text=mb_data.barcode))
-        try:
-            audio.save(file_path, v2_version=3, v1=2)
-        except Exception as exc:
-            raise TaggingError(f"failed to save MB metadata to {file_path}: {exc}") from exc
-
     def write_fingerprint_tags(
         self,
         file_path: Path,
@@ -436,8 +384,22 @@ class ID3Tagger(TrackTagger):
             audio = _load_or_create(file_path)
         except Exception as exc:
             raise TaggingError(f"failed to load {file_path} for fingerprint tags: {exc}") from exc
+        self._write_fingerprint_to(audio, recording_id=recording_id, score=score, mb_data=mb_data, cover_bytes=cover_bytes, artist_image=artist_image)
+        try:
+            audio.save(file_path, v2_version=3, v1=2)
+        except Exception as exc:
+            raise TaggingError(f"failed to save fingerprint tags to {file_path}: {exc}") from exc
 
-        # AcoustID
+    @staticmethod
+    def _write_fingerprint_to(
+        audio: ID3,
+        *,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        cover_bytes: bytes | None = None,
+        artist_image: bytes | None = None,
+    ) -> None:
         audio.delall("TXXX:MusicBrainz Recording Id")
         audio.delall("TXXX:AcoustID Score")
         if recording_id:
@@ -446,7 +408,6 @@ class ID3Tagger(TrackTagger):
 
         if mb_data is not None:
             audio.delall("TSRC")
-            audio.delall("TLEN")
             audio.delall("TXXX:MusicBrainz Release Id")
             audio.delall("TXXX:MusicBrainz Release Group Type")
             audio.delall("TXXX:MusicBrainz Genres")
@@ -467,6 +428,7 @@ class ID3Tagger(TrackTagger):
             if mb_data.isrcs:
                 audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
             if mb_data.length_ms is not None:
+                audio.delall("TLEN")
                 audio.add(TLEN(encoding=3, text=str(mb_data.length_ms)))
             if mb_data.release_id:
                 audio.add(TXXX(encoding=3, desc="MusicBrainz Release Id", text=mb_data.release_id))
@@ -495,25 +457,52 @@ class ID3Tagger(TrackTagger):
                 scaled_data, mime = scaled
                 audio.add(APIC(encoding=3, mime=mime, type=8, desc="Performer", data=scaled_data))
 
-        try:
-            audio.save(file_path, v2_version=3, v1=2)
-        except Exception as exc:
-            raise TaggingError(f"failed to save fingerprint tags to {file_path}: {exc}") from exc
-
     def write_lyrics(self, file_path: Path, lyrics: str) -> None:
         try:
             audio = _load_or_create(file_path)
         except Exception as exc:
             raise TaggingError(f"failed to load {file_path} for lyrics: {exc}") from exc
-        audio.delall("USLT")
-        audio.delall("TXXX:Lyrics")
-        audio.add(USLT(encoding=1, lang="eng", desc="", text=lyrics))
-        # Some Android players look for TXXX:Lyrics instead of USLT
-        audio.add(TXXX(encoding=1, desc="Lyrics", text=lyrics))
+        self._write_lyrics_to(audio, lyrics)
         try:
             audio.save(file_path, v2_version=3, v1=2)
         except Exception as exc:
             raise TaggingError(f"failed to save lyrics to {file_path}: {exc}") from exc
+
+    @staticmethod
+    def _write_lyrics_to(audio: ID3, lyrics: str) -> None:
+        audio.delall("USLT")
+        audio.delall("TXXX:Lyrics")
+        audio.add(USLT(encoding=1, lang="eng", desc="", text=lyrics))
+        audio.add(TXXX(encoding=1, desc="Lyrics", text=lyrics))
+
+    def write_all(
+        self,
+        file_path: Path,
+        track: TrackInfo,
+        provenance: str,
+        *,
+        enriched: EnrichedInfo | None = None,
+        cover_bytes: bytes | None = None,
+        fallback_cover: bytes | None = None,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        artist_image: bytes | None = None,
+        lyrics: str | None = None,
+    ) -> None:
+        try:
+            audio = _load_or_create(file_path)
+        except Exception as exc:
+            raise TaggingError(f"failed to load {file_path}: {exc}") from exc
+        self._write_basic_to(audio, track, provenance)
+        self._write_full_to(audio, track, enriched or EnrichedInfo(), cover_bytes, provenance, fallback_cover=fallback_cover)
+        self._write_fingerprint_to(audio, recording_id=recording_id, score=score, mb_data=mb_data, cover_bytes=cover_bytes, artist_image=artist_image)
+        if lyrics:
+            self._write_lyrics_to(audio, lyrics)
+        try:
+            audio.save(file_path, v2_version=3, v1=2)
+        except Exception as exc:
+            raise TaggingError(f"failed to save tags to {file_path}: {exc}") from exc
 
 
 class NullTagger(TrackTagger):
@@ -534,13 +523,7 @@ class NullTagger(TrackTagger):
     ) -> None:
         return None
 
-    def update_acoustid(self, file_path: Path, recording_id: str, score: float) -> None:
-        return None
-
     def embed_cover(self, file_path: Path, cover_bytes: bytes) -> None:
-        return None
-
-    def update_musicbrainz_metadata(self, file_path: Path, mb_data: MusicBrainzData) -> None:
         return None
 
     def write_fingerprint_tags(
@@ -559,6 +542,23 @@ class NullTagger(TrackTagger):
         return None
 
     def write_artist_image(self, file_path: Path, image_bytes: bytes) -> None:
+        return None
+
+    def write_all(
+        self,
+        file_path: Path,
+        track: TrackInfo,
+        provenance: str,
+        *,
+        enriched: EnrichedInfo | None = None,
+        cover_bytes: bytes | None = None,
+        fallback_cover: bytes | None = None,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        artist_image: bytes | None = None,
+        lyrics: str | None = None,
+    ) -> None:
         return None
 
 

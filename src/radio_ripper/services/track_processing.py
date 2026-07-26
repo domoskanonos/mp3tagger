@@ -394,6 +394,25 @@ async def fingerprint_song(
                 )
                 return
 
+            if (
+                track.artist
+                and track.title
+                and result.artist.lower() == track.title.lower()
+                and result.title.lower() == track.artist.lower()
+            ):
+                logger.warning(
+                    "[%s] AcoustID artist/title swapped (%s / %s) — correcting from ICY metadata",
+                    station_name,
+                    result.artist,
+                    result.title,
+                )
+                result = FingerprintResult(
+                    artist=track.artist,
+                    title=track.title,
+                    score=result.score,
+                    recording_id=result.recording_id,
+                )
+
             logger.info(
                 "[%s] AcoustID match (score=%.2f): %s - %s (rec=%s)",
                 station_name,
