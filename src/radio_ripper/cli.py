@@ -18,7 +18,8 @@ from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.infra.logging import configure_logging
 from radio_ripper.services.fingerprint import AcoustidFingerprintProvider
 from radio_ripper.services.lyrics import LRCLibProvider
-from radio_ripper.services.metadata import CoverArtArchiveProvider, ITunesMetadataProvider
+from radio_ripper.services.metadata_itunes import ITunesMetadataProvider
+from radio_ripper.services.metadata_musicbrainz import CoverArtArchiveProvider
 from radio_ripper.services.popularity import DeezerPopularityChecker, PopularityProvider
 from radio_ripper.services.processor import FileProcessor
 from radio_ripper.services.tagging import ID3Tagger

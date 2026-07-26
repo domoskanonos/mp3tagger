@@ -1,42 +1,27 @@
-"""Metadata enrichment providers.
+"""MusicBrainz / Cover Art Archive — Album-Cover und MB-Metadaten.
 
-The :class:`MetadataProvider` ABC lets the ripper swap iTunes for MusicBrainz,
-Last.fm, etc. The current default is :class:`ITunesMetadataProvider` which uses
-the public iTunes Search API (no API key required).
+:class:`CoverArtArchiveProvider` löst eine AcoustID-Recording-MBID in
+Album-Artwork und detaillierte MusicBrainz-Metadaten (Label, Katalog-Nr.,
+ISRCs, Genres) auf. Die MB-API wird ratelimited (1 Request/Sekunde).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any
 
 import httpx
 
-from radio_ripper.domain.models import EnrichedInfo, ITunesTrackData, MusicBrainzData
+from radio_ripper.domain.models import MusicBrainzData
 from radio_ripper.infra.http import AsyncHttpClient
 from radio_ripper.infra.resilience import retry_async
 
-ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
-
-_PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
-
-
-def _strip_parens(text: str) -> str:
-    """Remove parenthesized/bracketed substrings and collapse whitespace.
-
-    iTunes Search is exact-token strict: "I See a Dark(er)ness" yields 0
-    hits while "I See a Darkness" matches. This normalizer powers the
-    fallback query when the primary query returns nothing.
-    """
-    cleaned = _PARENS_RE.sub("", text)
-    return re.sub(r"\s+", " ", cleaned)
-
 
 async def _fetch_image(client: AsyncHttpClient, url: str, timeout: float) -> bytes | None:
+    """Lädt ein Bild von einer URL herunter, gibt ``None`` bei Fehler oder zu kleinen Daten."""
     try:
         data = await client.get_bytes(url, timeout=timeout)
     except Exception:
@@ -46,117 +31,24 @@ async def _fetch_image(client: AsyncHttpClient, url: str, timeout: float) -> byt
     return data
 
 
-class MetadataProvider(ABC):
-    """Enrich track metadata (album, year, artwork) from an external source."""
-
-    @abstractmethod
-    async def fetch(self, artist: str, title: str) -> EnrichedInfo | None:
-        """Return enriched info or ``None`` when no match is found."""
-
-    @abstractmethod
-    async def download_image(self, url: str) -> bytes | None:
-        """Download cover-art bytes; ``None`` on failure."""
-
-
-class ITunesMetadataProvider(MetadataProvider):
-    """iTunes Search API metadata + cover art provider."""
-
-    def __init__(
-        self,
-        client: AsyncHttpClient,
-        *,
-        metadata_timeout: float = 8.0,
-        cover_timeout: float = 15.0,
-    ) -> None:
-        self._client = client
-        self._metadata_timeout = metadata_timeout
-        self._cover_timeout = cover_timeout
-
-    @retry_async(max_attempts=2, base_delay=0.5, exceptions=(httpx.HTTPError,))
-    async def fetch(self, artist: str, title: str) -> EnrichedInfo | None:  # type: ignore[override]
-        query = f"{artist} {title}".strip()
-        if not query:
-            return None
-        hit = await self._search_one(query)
-        if hit is None and title:
-            stripped = _strip_parens(f"{artist} {title}").strip()
-            if stripped and stripped != query:
-                hit = await self._search_one(stripped)
-        if hit is None:
-            return None
-        artwork = hit.get("artworkUrl100") or hit.get("artworkUrl60")
-        if artwork:
-            artwork = self._upgrade_artwork(artwork)
-        itunes_data = ITunesTrackData(
-            track_id=hit.get("trackId"),
-            artist_id=hit.get("artistId"),
-            collection_id=hit.get("collectionId"),
-            track_view_url=hit.get("trackViewUrl"),
-            preview_url=hit.get("previewUrl"),
-            track_count=hit.get("trackCount"),
-            disc_count=hit.get("discCount"),
-            country=hit.get("country"),
-            explicitness=hit.get("collectionExplicitness") or hit.get("trackExplicitness"),
-        )
-        return EnrichedInfo(
-            artist=hit.get("artistName"),
-            title=hit.get("trackName"),
-            album=hit.get("collectionName"),
-            year=(hit.get("releaseDate") or "")[:4] or None,
-            genre=hit.get("primaryGenreName"),
-            label=hit.get("recordLabel"),
-            track_number=hit.get("trackNumber"),
-            disc_number=hit.get("discNumber"),
-            track_length=hit.get("trackTimeMillis"),
-            artwork_url=artwork,
-            itunes_data=itunes_data,
-        )
-
-    async def _search_one(self, query: str) -> dict[str, Any] | None:
-        """Run a single iTunes search; return the first hit or ``None``."""
-        try:
-            payload = await self._client.get_json(
-                ITUNES_SEARCH_URL,
-                params={"term": query, "limit": 1, "entity": "song", "media": "music"},
-                timeout=self._metadata_timeout,
-            )
-        except Exception:
-            return None
-        results: list[dict[str, Any]] = (payload or {}).get("results") or []
-        return results[0] if results else None
-
-    async def download_image(self, url: str) -> bytes | None:
-        return await _fetch_image(self._client, url, self._cover_timeout)
-
-    @staticmethod
-    def _upgrade_artwork(url: str) -> str:
-        """Bump iTunes thumbnail to a higher resolution URL."""
-        return (
-            url.replace("100x100bb", "600x600bb")
-            .replace("60x60bb", "600x600bb")
-            .replace("100x100", "600x600")
-            .replace("60x60", "600x600")
-        )
-
-
 class CoverArtProvider(ABC):
-    """Fetch cover art and recording metadata via MusicBrainz / Cover Art Archive."""
+    """Cover-Art und Recording-Metadaten via MusicBrainz / Cover Art Archive."""
 
     @abstractmethod
     async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
-        """Return front-cover bytes for a recording, or ``None``."""
+        """Front-Cover-Bytes für eine Recording-MBID oder ``None``."""
 
     @abstractmethod
     async def fetch_recording_data(self, recording_id: str) -> MusicBrainzData | None:
-        """Return detailed MusicBrainz metadata for a recording MBID."""
+        """Detaillierte MusicBrainz-Metadaten für eine Recording-MBID."""
 
 
 class CoverArtArchiveProvider(CoverArtProvider):
-    """Fetch album cover art from coverartarchive.org via a MusicBrainz recording MBID.
+    """Ruft Album-Artwork von coverartarchive.org über eine MusicBrainz-Recording-MBID ab.
 
-    Used as a secondary source when iTunes enrichment returned no artwork.
-    The flow is: MBID -> MusicBrainz /ws/2/recording lookup (to get releases)
-    -> for each release, fetch its front-cover bytes from coverartarchive.org.
+    Ablauf: MBID → MusicBrainz /ws/2/recording (Releases ermitteln)
+            → für jedes Release Front-Cover von coverartarchive.org holen
+            → erstes erfolgreiches Cover zurückgeben.
     """
 
     _MBZ_RECORDING_URL = "https://musicbrainz.org/ws/2/recording/{mbid}"
@@ -165,12 +57,14 @@ class CoverArtArchiveProvider(CoverArtProvider):
     _USER_AGENT = "Radio-Ripper/2.0 (https://github.com/artokun/radioripper)"
     _MAX_RELEASES_TO_TRY = 5
 
-    async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
-        """Look up the MusicBrainz recording, then fetch front cover bytes.
+    def __init__(self, client: AsyncHttpClient, *, timeout: float = 8.0) -> None:
+        self._client = client
+        self._timeout = timeout
+        self._last_mb_request: float = 0.0
+        self._recording_cache: dict[str, dict[str, Any]] = {}
 
-        Returns ``None`` if *recording_id* is empty, the MBZ lookup fails,
-        there are no releases, or none of the cover-art fetches yield bytes.
-        """
+    async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
+        """Ermittelt Releases zur MBID und versucht, das Front-Cover abzurufen."""
         if not recording_id:
             return None
         releases = await self._fetch_recording_releases(recording_id)
@@ -186,13 +80,10 @@ class CoverArtArchiveProvider(CoverArtProvider):
         return None
 
     async def fetch_recording_data(self, recording_id: str) -> MusicBrainzData | None:
-        """Fetch detailed MusicBrainz metadata for a recording MBID.
+        """Zweistufiger MB-Lookup: Recording → Releases → erstes offizielles Release.
 
-        Two-step lookup:
-          1. recording → releases + ISRCs + genres
-          2. first official release → labels + release-group type
-
-        Returns a :class:`MusicBrainzData` or ``None`` on failure.
+        Liefert Recording-Titel, -Künstler, ISRCs, Genres sowie
+        Release-Informationen (Label, Katalog-Nr., Datum, Land, Barcode).
         """
         if not recording_id:
             return None
@@ -202,6 +93,7 @@ class CoverArtArchiveProvider(CoverArtProvider):
 
         payload = self._recording_cache.get(recording_id, {})
 
+        # Künstler aus artist-credit parsen
         recording_title: str | None = payload.get("title")
         recording_artist: str | None = None
         with contextlib.suppress(Exception):
@@ -224,13 +116,14 @@ class CoverArtArchiveProvider(CoverArtProvider):
         with contextlib.suppress(Exception):
             genres = tuple(g["name"] for g in (payload.get("genres") or []) if g.get("name"))
 
-        # Pick the first official release (earliest date = original)
+        # Frühestes offizielles Release wählen
         official = [r for r in releases if r.get("status") == "Official"]
         official.sort(key=lambda r: r.get("date") or "")
         chosen = official[0] if official else releases[0] if releases else None
         if chosen is None:
             return MusicBrainzData(recording_id=recording_id, isrcs=isrcs, genres=genres)
 
+        # Release-Details (Labels, Release-Group) abrufen
         release_payload: dict[str, Any] | None = None
         with contextlib.suppress(Exception):
             release_payload = await self._rate_limited_json(
@@ -275,19 +168,13 @@ class CoverArtArchiveProvider(CoverArtProvider):
             barcode=release_payload.get("barcode") if release_payload else None,
         )
 
-    def __init__(self, client: AsyncHttpClient, *, timeout: float = 8.0) -> None:
-        self._client = client
-        self._timeout = timeout
-        self._last_mb_request: float = 0.0
-        self._recording_cache: dict[str, dict[str, Any]] = {}
-
     @retry_async(max_attempts=2, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def _rate_limited_json(
         self,
         url: str,
         params: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
-        """MusicBrainz rate limit: 1 request / second."""
+        """MusicBrainz-Rate-Limit: maximal 1 Request pro Sekunde."""
         since_last = time.monotonic() - self._last_mb_request
         if since_last < 1.0:
             await asyncio.sleep(1.0 - since_last)
@@ -302,11 +189,11 @@ class CoverArtArchiveProvider(CoverArtProvider):
         recording_id: str,
         extra_inc: str = "artists+releases+isrcs+genres",
     ) -> list[dict[str, Any]] | None:
-        """Fetch the recording JSON and return its release list.
+        """Ruft das Recording-JSON ab und gibt die Release-Liste zurück.
 
-        Caches the raw payload in ``self._recording_cache`` so that
-        ``fetch_cover_by_recording_id`` and ``fetch_recording_data``
-        don't duplicate the network call.
+        Die Rohdaten werden in ``self._recording_cache`` zwischengespeichert,
+        sodass ``fetch_cover_by_recording_id`` und ``fetch_recording_data``
+        sich den Netzwerkaufruf teilen.
         """
         if recording_id in self._recording_cache:
             return (self._recording_cache[recording_id] or {}).get("releases") or []
@@ -324,6 +211,4 @@ class CoverArtArchiveProvider(CoverArtProvider):
 __all__ = [
     "CoverArtArchiveProvider",
     "CoverArtProvider",
-    "ITunesMetadataProvider",
-    "MetadataProvider",
 ]

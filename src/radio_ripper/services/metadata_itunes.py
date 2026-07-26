@@ -1,0 +1,146 @@
+"""iTunes-Metadaten-Anreicherung.
+
+:class:`ITunesMetadataProvider` sucht über die öffentliche iTunes Search API
+nach Künstler/Titel und liefert Album, Jahr, Genre, Cover-URL und iTunes-IDs.
+"""
+
+from __future__ import annotations
+
+import re
+from abc import ABC, abstractmethod
+from typing import Any
+
+import httpx
+
+from radio_ripper.domain.models import EnrichedInfo, ITunesTrackData
+from radio_ripper.infra.http import AsyncHttpClient
+from radio_ripper.infra.resilience import retry_async
+
+ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+
+_PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
+
+
+def _strip_parens(text: str) -> str:
+    """Entfernt Klammerausdrücke für eine breitere iTunes-Suche.
+
+    iTunes Search ist exakt: "I See a Dark(er)ness" findet nichts,
+    "I See a Darkness" schon. Dieser Normalizer wird für die
+    Fallback-Suche verwendet, wenn die primäre Suche leer bleibt.
+    """
+    cleaned = _PARENS_RE.sub("", text)
+    return re.sub(r"\s+", " ", cleaned)
+
+
+async def _fetch_image(client: AsyncHttpClient, url: str, timeout: float) -> bytes | None:
+    """Lädt ein Bild von einer URL herunter, gibt ``None`` bei Fehler oder zu kleinen Daten."""
+    try:
+        data = await client.get_bytes(url, timeout=timeout)
+    except Exception:
+        return None
+    if not data or len(data) < 64:
+        return None
+    return data
+
+
+class MetadataProvider(ABC):
+    """Reichert Track-Metadaten (Album, Jahr, Cover) aus einer externen Quelle an."""
+
+    @abstractmethod
+    async def fetch(self, artist: str, title: str) -> EnrichedInfo | None:
+        """Gibt angereicherte Infos zurück oder ``None`` bei keinem Treffer."""
+
+    @abstractmethod
+    async def download_image(self, url: str) -> bytes | None:
+        """Cover-Bild herunterladen; ``None`` bei Fehler."""
+
+
+class ITunesMetadataProvider(MetadataProvider):
+    """iTunes Search API — Album, Jahr, Genre, iTunes-IDs, Cover-URL.
+
+    Kein API-Key erforderlich. Die Suche erfolgt über den öffentlichen
+    iTunes Search-Endpunkt (entity=song, limit=1).
+    """
+
+    def __init__(
+        self,
+        client: AsyncHttpClient,
+        *,
+        metadata_timeout: float = 8.0,
+        cover_timeout: float = 15.0,
+    ) -> None:
+        self._client = client
+        self._metadata_timeout = metadata_timeout
+        self._cover_timeout = cover_timeout
+
+    @retry_async(max_attempts=2, base_delay=0.5, exceptions=(httpx.HTTPError,))
+    async def fetch(self, artist: str, title: str) -> EnrichedInfo | None:  # type: ignore[override]
+        query = f"{artist} {title}".strip()
+        if not query:
+            return None
+        hit = await self._search_one(query)
+        if hit is None and title:
+            stripped = _strip_parens(f"{artist} {title}").strip()
+            if stripped and stripped != query:
+                hit = await self._search_one(stripped)
+        if hit is None:
+            return None
+        artwork = hit.get("artworkUrl100") or hit.get("artworkUrl60")
+        if artwork:
+            artwork = self._upgrade_artwork(artwork)
+        itunes_data = ITunesTrackData(
+            track_id=hit.get("trackId"),
+            artist_id=hit.get("artistId"),
+            collection_id=hit.get("collectionId"),
+            track_view_url=hit.get("trackViewUrl"),
+            preview_url=hit.get("previewUrl"),
+            track_count=hit.get("trackCount"),
+            disc_count=hit.get("discCount"),
+            country=hit.get("country"),
+            explicitness=hit.get("collectionExplicitness") or hit.get("trackExplicitness"),
+        )
+        return EnrichedInfo(
+            artist=hit.get("artistName"),
+            title=hit.get("trackName"),
+            album=hit.get("collectionName"),
+            year=(hit.get("releaseDate") or "")[:4] or None,
+            genre=hit.get("primaryGenreName"),
+            label=hit.get("recordLabel"),
+            track_number=hit.get("trackNumber"),
+            disc_number=hit.get("discNumber"),
+            track_length=hit.get("trackTimeMillis"),
+            artwork_url=artwork,
+            itunes_data=itunes_data,
+        )
+
+    async def _search_one(self, query: str) -> dict[str, Any] | None:
+        """Einzelne iTunes-Suche; gibt den ersten Treffer zurück oder ``None``."""
+        try:
+            payload = await self._client.get_json(
+                ITUNES_SEARCH_URL,
+                params={"term": query, "limit": 1, "entity": "song", "media": "music"},
+                timeout=self._metadata_timeout,
+            )
+        except Exception:
+            return None
+        results: list[dict[str, Any]] = (payload or {}).get("results") or []
+        return results[0] if results else None
+
+    async def download_image(self, url: str) -> bytes | None:
+        return await _fetch_image(self._client, url, self._cover_timeout)
+
+    @staticmethod
+    def _upgrade_artwork(url: str) -> str:
+        """Erhöht die iTunes-Thumbnail-Auflösung von 100px/60px auf 600px."""
+        return (
+            url.replace("100x100bb", "600x600bb")
+            .replace("60x60bb", "600x600bb")
+            .replace("100x100", "600x600")
+            .replace("60x60", "600x600")
+        )
+
+
+__all__ = [
+    "ITunesMetadataProvider",
+    "MetadataProvider",
+]

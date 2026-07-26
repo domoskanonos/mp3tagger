@@ -50,7 +50,7 @@ class MusicBrainzData:
     """Metadata fetched from MusicBrainz after an AcoustID match.
 
     Requires two API calls (recording → releases → labels) so it's populated
-    lazily in :meth:`~radio_ripper.services.metadata.CoverArtArchiveProvider.fetch_recording_data`.
+    lazily in :meth:`~radio_ripper.services.metadata_musicbrainz.CoverArtArchiveProvider.fetch_recording_data`.
     """
 
     recording_id: str

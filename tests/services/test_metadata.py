@@ -6,11 +6,8 @@ import pytest
 import respx
 
 from radio_ripper.infra.http import HttpxAsyncClient
-from radio_ripper.services.metadata import (
-    CoverArtArchiveProvider,
-    ITunesMetadataProvider,
-    _strip_parens,
-)
+from radio_ripper.services.metadata_itunes import ITunesMetadataProvider, _strip_parens
+from radio_ripper.services.metadata_musicbrainz import CoverArtArchiveProvider
 
 
 @pytest.fixture

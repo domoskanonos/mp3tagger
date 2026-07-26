@@ -22,7 +22,8 @@ from radio_ripper.services.fingerprint import (
     NonRetriableFingerprintError,
 )
 from radio_ripper.services.lyrics import LyricsProvider
-from radio_ripper.services.metadata import CoverArtProvider, MetadataProvider
+from radio_ripper.services.metadata_itunes import MetadataProvider
+from radio_ripper.services.metadata_musicbrainz import CoverArtProvider
 from radio_ripper.services.popularity import PopularityProvider, maybe_delete_unpopular
 from radio_ripper.services.file_utils import compute_file_path, safe_unlink
 from radio_ripper.services.tagging import TrackTagger, read_acoustid_score
@@ -277,41 +278,43 @@ class FileProcessor:
     def _cleanup_file(self, path: Path) -> None:
         safe_unlink(path)
 
-    # ── main file processing ──
+    # ── Hauptverarbeitungsschritte ──
 
-    async def _process_file(self, proc_path: Path) -> None:
-        # ── Move .processing from inbox to work_dir for safe staging ──
+    async def _move_to_work_dir(self, proc_path: Path) -> Path | None:
+        """Verschiebt die .processing-Datei aus dem Inbox ins work_dir."""
         work_path = self._settings.work_dir / proc_path.name
         try:
             work_path.parent.mkdir(parents=True, exist_ok=True)
             proc_path.rename(work_path)
+            return work_path
         except OSError:
             self._log.error(
                 "[DELETE] %s — Grund: Verschieben ins work_dir fehlgeschlagen",
                 proc_path.name,
             )
             self._cleanup_file(proc_path)
-            return
+            return None
 
-        # ── Fingerprint ──
+    async def _fingerprint_and_validate(self, work_path: Path) -> FingerprintResult | None:
+        """Fingerprint + Fehlerbehandlung. Gibt None bei Abbruch."""
         try:
             result = await self._fingerprint.fingerprint(work_path)
         except NonRetriableFingerprintError:
             self._log.warning("[DELETE] %s — Grund: Datei korrupt/nicht lesbar", work_path.name)
             self._cleanup_file(work_path)
-            return
+            return None
         except FingerprintError:
             self._log.warning(
                 "[TEMP] %s — Grund: Fingerprint-Infrastrukturfehler, verschoben zur Prüfung",
                 work_path.name,
             )
             self._move_to_temp(work_path)
-            return
+            return None
 
         if result is None or not result.recording_id:
             self._log.info("[DELETE] %s — Grund: kein AcoustID-Treffer", work_path.name)
             self._cleanup_file(work_path)
-            return
+            return None
 
         if result.score < self._settings.acoustid_min_score:
             self._log.info(
@@ -321,35 +324,17 @@ class FileProcessor:
                 self._settings.acoustid_min_score,
             )
             self._cleanup_file(work_path)
-            return
+            return None
 
-        # ── Phase 1: CAA + MB parallel (Artist-Image folgt in Phase 3) ──
-        mb_data: MusicBrainzData | None = None
-        cover_from_caa: bytes | None = None
-        if self._cover_provider and result.recording_id:
-            cover_from_caa, mb_data, _ = await _fetch_cover_data(
-                self._cover_provider,
-                result.recording_id,
-                None,
-                "",
-                self._name,
-                self._log,
-            )
+        return result
 
-        # ── Phase 2: MB-Korrektur (Artist/Title Swap-Fix, MB ist kanonisch) ──
-        corrected = correct_fingerprint_result(result, mb_data)
-        if corrected is not result:
-            self._log.info(
-                "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
-                self._name,
-                result.artist, corrected.artist,
-                result.title, corrected.title,
-            )
-            result = corrected
-        stream_title = f"{result.artist} - {result.title}"
-        track = TrackInfo.from_stream_title(stream_title)
-
-        # ── Phase 3: iTunes + Lyrics + Artist-Image parallel (mit korrigierten Werten) ──
+    async def _enrich_parallel(
+        self,
+        result: FingerprintResult,
+        track: TrackInfo,
+        work_path: Path,
+    ) -> tuple[EnrichedInfo | None, bytes | None, bytes | None, str | None]:
+        """Führt iTunes, Lyrics und Artist-Image parallel aus."""
         enriched: EnrichedInfo | None = None
         cover_from_enrich: bytes | None = None
         artist_image: bytes | None = None
@@ -381,15 +366,27 @@ class FileProcessor:
             )
 
         await asyncio.gather(_fetch_itunes(), _fetch_lyr(), _fetch_art_img())
+        return enriched, cover_from_enrich, artist_image, lyrics
 
-        # ── Phase 4: Ziel-Pfad berechnen + Score-basierte Entscheidung ──
+    def _compute_destination_and_score(
+        self,
+        result: FingerprintResult,
+        track: TrackInfo,
+        enriched: EnrichedInfo | None,
+        work_path: Path,
+    ) -> tuple[str, Path, Path | None]:
+        """Berechnet Zielpfad + Score-Vergleich mit bestehender Datei.
+
+        Returns (provenance, final_path, delete_old).
+        delete_old ist None wenn keine alte Datei ersetzt wird.
+        """
         provenance = f"{self._name}/{self._name}"
         album = enriched.album if enriched and enriched.album else None
         final_path = compute_file_path(
             self._settings.destination,
             result.artist,
             result.title,
-            stream_title,
+            track.stream_title,
             album=album,
         )
 
@@ -404,8 +401,7 @@ class FileProcessor:
                     existing_score,
                     result.score,
                 )
-                self._cleanup_file(work_path)
-                return
+                return "", None, None
             self._log.info(
                 "Neue Datei hat besseren Score (%.4f > %.4f) — "
                 "alte wird nach erfolgreichem Move gelöscht",
@@ -414,13 +410,63 @@ class FileProcessor:
             )
             delete_old = final_path
 
-        # ── Rename .untested.mp3 → .mp3 ──
+        return provenance, final_path, delete_old
+
+    async def _process_file(self, proc_path: Path) -> None:
+        work_path = await self._move_to_work_dir(proc_path)
+        if work_path is None:
+            return
+
+        result = await self._fingerprint_and_validate(work_path)
+        if result is None:
+            return
+
+        # ── Phase 1: CAA + MB parallel ──
+        mb_data: MusicBrainzData | None = None
+        cover_from_caa: bytes | None = None
+        if self._cover_provider and result.recording_id:
+            cover_from_caa, mb_data, _ = await _fetch_cover_data(
+                self._cover_provider,
+                result.recording_id,
+                None,
+                "",
+                self._name,
+                self._log,
+            )
+
+        # ── Phase 2: MB-Korrektur (MB-Daten sind kanonisch) ──
+        corrected = correct_fingerprint_result(result, mb_data)
+        if corrected is not result:
+            self._log.info(
+                "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
+                self._name,
+                result.artist, corrected.artist,
+                result.title, corrected.title,
+            )
+            result = corrected
+        stream_title = f"{result.artist} - {result.title}"
+        track = TrackInfo.from_stream_title(stream_title)
+
+        # ── Phase 3: iTunes + Lyrics + Artist-Image parallel ──
+        enriched, cover_from_enrich, artist_image, lyrics = await self._enrich_parallel(
+            result, track, work_path,
+        )
+
+        # ── Phase 4: Zielpfad + Score-Entscheidung ──
+        provenance, final_path, delete_old = self._compute_destination_and_score(
+            result, track, enriched, work_path,
+        )
+        if final_path is None:  # bestehende Datei hat besseren Score
+            self._cleanup_file(work_path)
+            return
+
+        # ── Phase 5: .untested → .mp3 umbenennen ──
         stage_path = _strip_untested_suffix(work_path, self._log, self._name, on_fail="")
         if stage_path is None:
             self._cleanup_file(work_path)
             return
 
-        # ── Popularität (Deezer) – löscht Datei bei zu unbekannt ──
+        # ── Phase 6: Popularitäts-Prüfung ──
         if self._settings.min_popularity_rank > 0 and self._popularity and (result.artist or result.title):
             deleted = await maybe_delete_unpopular(
                 file_path=stage_path,
@@ -434,20 +480,14 @@ class FileProcessor:
             if deleted:
                 return
 
-        # ── EIN Tag-Schreib-Durchgang ──
+        # ── Phase 7: Einmaliger Tag-Schreib-Durchgang ──
         final_cover = cover_from_caa or cover_from_enrich
         try:
             self._tagger.write_all(
-                stage_path,
-                track,
-                provenance,
-                enriched=enriched,
-                cover_bytes=final_cover,
-                recording_id=result.recording_id,
-                score=result.score,
-                mb_data=mb_data,
-                artist_image=artist_image,
-                lyrics=lyrics,
+                stage_path, track, provenance,
+                enriched=enriched, cover_bytes=final_cover,
+                recording_id=result.recording_id, score=result.score,
+                mb_data=mb_data, artist_image=artist_image, lyrics=lyrics,
             )
             if final_cover is not None:
                 self._log.info("[%s] Cover embedded: %s", self._name, stage_path.name)
@@ -459,7 +499,7 @@ class FileProcessor:
         except Exception as exc:
             self._log.warning("[%s] Tag write failed: %s", self._name, exc)
 
-        # ── Atomarer Move zu destination ──
+        # ── Phase 8: Atomarer Move zu destination ──
         final_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             stage_path.rename(final_path)
@@ -473,7 +513,7 @@ class FileProcessor:
 
         self._log.info("[%s] Fertig: %s", self._name, final_path)
 
-        # ── Alte Datei erst jetzt löschen (neue ist sicher am Ziel) ──
+        # ── Alte Datei nach erfolgreichem Move löschen ──
         if delete_old is not None:
             self._log.info(
                 "[DELETE] %s — Grund: durch bessere Version ersetzt",

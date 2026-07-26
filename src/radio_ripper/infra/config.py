@@ -19,7 +19,6 @@ class Settings(BaseModel):
     log_level: str = "INFO"
     log_file: Path | None = None
 
-    fallback_cover_path: Path | None = None
     metadata_timeout: float = Field(default=8.0, ge=0.5)
     cover_timeout: float = Field(default=15.0, ge=0.5)
 
@@ -36,7 +35,7 @@ class Settings(BaseModel):
             raise ValueError(f"invalid log_level: {v}")
         return v
 
-    @field_validator("work_dir", "destination", "log_file", "fallback_cover_path", "mp3_inbox")
+    @field_validator("work_dir", "destination", "log_file", "mp3_inbox")
     @classmethod
     def _expand(cls, v: Path | None) -> Path | None:
         return v.expanduser() if v is not None else None
