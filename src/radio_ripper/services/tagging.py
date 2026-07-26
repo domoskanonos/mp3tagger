@@ -186,7 +186,7 @@ class ID3Tagger(TrackTagger):
         track: TrackInfo,
         provenance: str,
         *,
-        enriched: EnrichedInfo | None,
+        enriched: EnrichedInfo,
         cover_bytes: bytes | None,
         fallback_cover: bytes | None,
         recording_id: str | None,
