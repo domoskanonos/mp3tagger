@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from pathlib import Path
@@ -49,9 +48,6 @@ from mutagen.id3 import (
 
 from radio_ripper.domain.models import EnrichedInfo, MusicBrainzData, TrackInfo
 from radio_ripper.infra.errors import TaggingError
-from radio_ripper.services.metadata import MetadataProvider
-
-_BASIC_FRAMES = ("TPE1", "TPE2", "TIT2", "TALB", "TRSN", "TPUB", "COMM", "TXXX:RIPPEDBY")
 
 _MIN_COVER_PX = 500
 _MAX_COVER_PX = 1000
@@ -68,13 +64,6 @@ def _guess_image_mime(data: bytes) -> str:
 
 
 def _scale_cover(data: bytes) -> tuple[bytes, str] | None:
-    """Scale *data* to the 500-1000 px target range and return ``(bytes, mime)``.
-
-    Only ``image/jpeg`` and ``image/png`` are accepted; any other format
-    (e.g. GIF) returns ``None`` so the cover is silently skipped.
-    On Pillow import error or decode failure the original bytes are returned
-    unchanged so the cover is still embedded without scaling.
-    """
     mime = _guess_image_mime(data)
     if mime not in ("image/jpeg", "image/png"):
         return None
@@ -103,8 +92,6 @@ def _scale_cover(data: bytes) -> tuple[bytes, str] | None:
     except ImportError:
         return data, mime
     except Exception:
-        with contextlib.suppress(Exception):
-            pass
         return data, mime
 
 
@@ -139,52 +126,6 @@ class TrackTagger(ABC):
     """Writes ID3 tags to a recorded MP3 file."""
 
     @abstractmethod
-    def write_basic(self, file_path: Path, track: TrackInfo, provenance: str) -> None:
-        """Write minimal tags (artist/title/comment) synchronously."""
-
-    @abstractmethod
-    def write_full(
-        self,
-        file_path: Path,
-        track: TrackInfo,
-        enriched: EnrichedInfo,
-        cover_bytes: bytes | None,
-        provenance: str,
-        *,
-        fallback_cover: bytes | None = None,
-    ) -> None:
-        """Write enriched tags including album/year/genre and cover art."""
-
-    @abstractmethod
-    def embed_cover(self, file_path: Path, cover_bytes: bytes) -> None:
-        """Embed cover-art bytes into an existing file (replaces any APIC)."""
-
-    @abstractmethod
-    def write_fingerprint_tags(
-        self,
-        file_path: Path,
-        *,
-        recording_id: str | None = None,
-        score: float = 0.0,
-        mb_data: MusicBrainzData | None = None,
-        cover_bytes: bytes | None = None,
-        artist_image: bytes | None = None,
-    ) -> None:
-        """Write all post-fingerprint tags in a single save.
-
-        Combines AcoustID, MusicBrainz, cover art, and artist image
-        into one mutagen save call to reduce disk I/O.
-        """
-
-    @abstractmethod
-    def write_lyrics(self, file_path: Path, lyrics: str) -> None:
-        """Write lyrics text into the USLT frame."""
-
-    @abstractmethod
-    def write_artist_image(self, file_path: Path, image_bytes: bytes) -> None:
-        """Embed artist portrait into APIC type=8 (Cover (front) stays type=3)."""
-
-    @abstractmethod
     def write_all(
         self,
         file_path: Path,
@@ -205,12 +146,6 @@ class TrackTagger(ABC):
 
 
 def _load_or_create(file_path: Path) -> ID3:
-    """Load an existing ID3 tag or create a fresh one.
-
-    Raises the underlying mutagen error (e.g. ``MutagenError``) if the file
-    exists but cannot be read, or the file does not exist and the parent
-    directory is missing.
-    """
     try:
         return ID3(file_path)
     except ID3NoHeaderError:
@@ -220,77 +155,70 @@ def _load_or_create(file_path: Path) -> ID3:
 class ID3Tagger(TrackTagger):
     """mutagen-backed ID3 tagger."""
 
-    def write_basic(self, file_path: Path, track: TrackInfo, provenance: str) -> None:
-        with _with_audio(file_path, "basic tags") as audio:
-            self._write_basic_to(audio, track, provenance)
+    def write_all(
+        self,
+        file_path: Path,
+        track: TrackInfo,
+        provenance: str,
+        *,
+        enriched: EnrichedInfo | None = None,
+        cover_bytes: bytes | None = None,
+        fallback_cover: bytes | None = None,
+        recording_id: str | None = None,
+        score: float = 0.0,
+        mb_data: MusicBrainzData | None = None,
+        artist_image: bytes | None = None,
+        lyrics: str | None = None,
+    ) -> None:
+        enriched = enriched or EnrichedInfo()
+        with _with_audio(file_path, "tags") as audio:
+            self._write_all_to(
+                audio, track, provenance,
+                enriched=enriched, cover_bytes=cover_bytes,
+                fallback_cover=fallback_cover, recording_id=recording_id,
+                score=score, mb_data=mb_data, artist_image=artist_image,
+                lyrics=lyrics,
+            )
 
     @staticmethod
-    def _write_basic_to(audio: ID3, track: TrackInfo, provenance: str) -> None:
-        for frame in _BASIC_FRAMES:
+    def _write_all_to(
+        audio: ID3,
+        track: TrackInfo,
+        provenance: str,
+        *,
+        enriched: EnrichedInfo | None,
+        cover_bytes: bytes | None,
+        fallback_cover: bytes | None,
+        recording_id: str | None,
+        score: float,
+        mb_data: MusicBrainzData | None,
+        artist_image: bytes | None,
+        lyrics: str | None,
+    ) -> None:
+        ALL_FRAMES = (
+            "TPE1", "TPE2", "TIT2", "TALB", "TRSN", "TPUB", "COMM", "TXXX:RIPPEDBY",
+            "TCON", "TDRC", "TRCK", "TPOS", "APIC", "TLEN",
+            "TXXX:ITunesTrackId", "TXXX:ITunesArtistId", "TXXX:ITunesCollectionId",
+            "TXXX:ITunesTrackUrl", "TXXX:ITunesPreviewUrl",
+            "TXXX:ITunesTrackCount", "TXXX:ITunesDiscCount",
+            "TXXX:ITunesCountry", "TXXX:ITunesExplicitness",
+            "TXXX:MusicBrainz Recording Id", "TXXX:AcoustID Score",
+            "TSRC",
+            "TXXX:MusicBrainz Release Id", "TXXX:MusicBrainz Release Group Type",
+            "TXXX:MusicBrainz Genres", "TXXX:MusicBrainz Release Title",
+            "TXXX:MusicBrainz Release Date", "TXXX:MusicBrainz Album Release Country",
+            "TXXX:CatalogNumber", "TXXX:Barcode",
+            "USLT", "TXXX:Lyrics",
+        )
+        for frame in ALL_FRAMES:
             audio.delall(frame)
+
+        # Basic
         if track.artist:
             audio.add(TPE1(encoding=3, text=track.artist))
             audio.add(TPE2(encoding=3, text=track.artist))
         if track.title:
             audio.add(TIT2(encoding=3, text=track.title))
-        audio.add(TALB(encoding=3, text=track.title or track.stream_title))
-        audio.add(TRSN(encoding=3, text=_station_name(provenance)))
-        audio.add(COMM(encoding=3, lang="eng", desc="", text="Recorded via radiostream"))
-        audio.add(TXXX(encoding=3, desc="RIPPEDBY", text=provenance))
-
-    def write_full(
-        self,
-        file_path: Path,
-        track: TrackInfo,
-        enriched: EnrichedInfo,
-        cover_bytes: bytes | None,
-        provenance: str,
-        *,
-        fallback_cover: bytes | None = None,
-        mb_data: MusicBrainzData | None = None,
-    ) -> None:
-        with _with_audio(file_path, "enriched tags") as audio:
-            self._write_full_to(
-                audio, track, enriched, cover_bytes, provenance,
-                fallback_cover=fallback_cover, mb_data=mb_data,
-            )
-
-    @staticmethod
-    def _write_full_to(
-        audio: ID3,
-        track: TrackInfo,
-        enriched: EnrichedInfo,
-        cover_bytes: bytes | None,
-        provenance: str,
-        *,
-        fallback_cover: bytes | None = None,
-        mb_data: MusicBrainzData | None = None,
-    ) -> None:
-        for frame in _BASIC_FRAMES:
-            audio.delall(frame)
-        audio.delall("TCON")
-        audio.delall("TDRC")
-        audio.delall("TRCK")
-        audio.delall("TPOS")
-        audio.delall("APIC")
-        audio.delall("TLEN")
-        audio.delall("TXXX:ITunesTrackId")
-        audio.delall("TXXX:ITunesArtistId")
-        audio.delall("TXXX:ITunesCollectionId")
-        audio.delall("TXXX:ITunesTrackUrl")
-        audio.delall("TXXX:ITunesPreviewUrl")
-        audio.delall("TXXX:ITunesTrackCount")
-        audio.delall("TXXX:ITunesDiscCount")
-        audio.delall("TXXX:ITunesCountry")
-        audio.delall("TXXX:ITunesExplicitness")
-
-        artist = enriched.artist or track.artist
-        title = enriched.title or track.title
-        if artist:
-            audio.add(TPE1(encoding=3, text=artist))
-            audio.add(TPE2(encoding=3, text=artist))
-        if title:
-            audio.add(TIT2(encoding=3, text=title))
 
         # Album: enriched → mb_data → track fallback
         album = enriched.album
@@ -314,9 +242,17 @@ class ID3Tagger(TrackTagger):
             genre = ", ".join(mb_data.genres)
         if genre:
             audio.add(TCON(encoding=3, text=genre))
+
         audio.add(TRSN(encoding=3, text=_station_name(provenance)))
-        if enriched.label:
-            audio.add(TPUB(encoding=3, text=enriched.label))
+
+        # Label: enriched → mb_data.release_label (mb_data wins)
+        label = None
+        if mb_data and mb_data.release_label:
+            label = mb_data.release_label
+        elif enriched.label:
+            label = enriched.label
+        if label:
+            audio.add(TPUB(encoding=3, text=label))
 
         if enriched.track_number is not None:
             trck = str(enriched.track_number)
@@ -325,11 +261,20 @@ class ID3Tagger(TrackTagger):
             audio.add(TRCK(encoding=3, text=trck))
         if enriched.disc_number is not None:
             audio.add(TPOS(encoding=3, text=str(enriched.disc_number)))
-        if enriched.track_length is not None:
-            audio.add(TLEN(encoding=3, text=str(enriched.track_length)))
+
+        # Track length: enriched → mb_data.length_ms (mb_data wins)
+        length = None
+        if mb_data and mb_data.length_ms is not None:
+            length = mb_data.length_ms
+        elif enriched.track_length is not None:
+            length = enriched.track_length
+        if length is not None:
+            audio.add(TLEN(encoding=3, text=str(length)))
+
         audio.add(COMM(encoding=3, lang="eng", desc="", text="Recorded via radiostream"))
         audio.add(TXXX(encoding=3, desc="RIPPEDBY", text=provenance))
 
+        # iTunes metadata
         it = enriched.itunes_data
         if it:
             if it.track_id is not None:
@@ -350,75 +295,13 @@ class ID3Tagger(TrackTagger):
                 audio.add(TXXX(encoding=3, desc="ITunesCountry", text=it.country))
             if it.explicitness:
                 audio.add(TXXX(encoding=3, desc="ITunesExplicitness", text=it.explicitness))
-        effective_cover = cover_bytes or fallback_cover
-        if effective_cover:
-            _embed_apic(audio, effective_cover, 3, "Cover")
 
-    @staticmethod
-    def _embed_single_apic(file_path: Path, image_bytes: bytes, apic_type: int, desc: str) -> None:
-        scaled = _scale_cover(image_bytes)
-        if scaled is not None:
-            scaled_data, mime = scaled
-            frame_name = f"APIC:{desc}"
-            try:
-                audio = _load_or_create(file_path)
-            except Exception as exc:
-                raise TaggingError(f"failed to load {file_path} for {desc}: {exc}") from exc
-            audio.delall(frame_name)
-            audio.add(APIC(encoding=3, mime=mime, type=apic_type, desc=desc, data=scaled_data))
-            try:
-                audio.save(file_path, v2_version=3, v1=2)
-            except Exception as exc:
-                raise TaggingError(f"failed to save {desc} to {file_path}: {exc}") from exc
-
-    def embed_cover(self, file_path: Path, cover_bytes: bytes) -> None:
-        self._embed_single_apic(file_path, cover_bytes, 3, "Cover")
-
-    def write_artist_image(self, file_path: Path, image_bytes: bytes) -> None:
-        self._embed_single_apic(file_path, image_bytes, 8, "Performer")
-
-    def write_fingerprint_tags(
-        self,
-        file_path: Path,
-        *,
-        recording_id: str | None = None,
-        score: float = 0.0,
-        mb_data: MusicBrainzData | None = None,
-        cover_bytes: bytes | None = None,
-        artist_image: bytes | None = None,
-    ) -> None:
-        with _with_audio(file_path, "fingerprint tags") as audio:
-            self._write_fingerprint_to(audio, recording_id=recording_id, score=score, mb_data=mb_data, cover_bytes=cover_bytes, artist_image=artist_image)
-
-    @staticmethod
-    def _write_fingerprint_to(
-        audio: ID3,
-        *,
-        recording_id: str | None = None,
-        score: float = 0.0,
-        mb_data: MusicBrainzData | None = None,
-        cover_bytes: bytes | None = None,
-        artist_image: bytes | None = None,
-    ) -> None:
-        audio.delall("TXXX:MusicBrainz Recording Id")
-        audio.delall("TXXX:AcoustID Score")
+        # Fingerprint
         if recording_id:
             audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=recording_id))
         audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
 
         if mb_data is not None:
-            audio.delall("TSRC")
-            audio.delall("TXXX:MusicBrainz Release Id")
-            audio.delall("TXXX:MusicBrainz Release Group Type")
-            audio.delall("TXXX:MusicBrainz Genres")
-            audio.delall("TXXX:MusicBrainz Release Title")
-            audio.delall("TXXX:MusicBrainz Release Date")
-            audio.delall("TXXX:MusicBrainz Album Release Country")
-            audio.delall("TXXX:CatalogNumber")
-            audio.delall("TXXX:Barcode")
-            if mb_data.release_label:
-                audio.delall("TPUB")
-                audio.add(TPUB(encoding=3, text=mb_data.release_label))
             if mb_data.release_title:
                 audio.add(TXXX(encoding=3, desc="MusicBrainz Release Title", text=mb_data.release_title))
             if mb_data.release_date:
@@ -427,15 +310,10 @@ class ID3Tagger(TrackTagger):
                 audio.add(TXXX(encoding=3, desc="MusicBrainz Album Release Country", text=mb_data.release_country))
             if mb_data.isrcs:
                 audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
-            if mb_data.length_ms is not None:
-                audio.delall("TLEN")
-                audio.add(TLEN(encoding=3, text=str(mb_data.length_ms)))
             if mb_data.release_id:
                 audio.add(TXXX(encoding=3, desc="MusicBrainz Release Id", text=mb_data.release_id))
             if mb_data.release_group_type:
-                audio.add(
-                    TXXX(encoding=3, desc="MusicBrainz Release Group Type", text=mb_data.release_group_type)
-                )
+                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Group Type", text=mb_data.release_group_type))
             if mb_data.genres:
                 audio.add(TXXX(encoding=3, desc="MusicBrainz Genres", text=", ".join(mb_data.genres)))
             if mb_data.release_catalog_no:
@@ -443,88 +321,23 @@ class ID3Tagger(TrackTagger):
             if mb_data.barcode:
                 audio.add(TXXX(encoding=3, desc="Barcode", text=mb_data.barcode))
 
-        if cover_bytes is not None:
-            _embed_apic(audio, cover_bytes, 3, "Cover")
+        # Cover art
+        effective_cover = cover_bytes or fallback_cover
+        if effective_cover:
+            _embed_apic(audio, effective_cover, 3, "Cover")
 
         if artist_image is not None:
             _embed_apic(audio, artist_image, 8, "Performer")
 
-    def write_lyrics(self, file_path: Path, lyrics: str) -> None:
-        with _with_audio(file_path, "lyrics") as audio:
-            self._write_lyrics_to(audio, lyrics)
-
-    @staticmethod
-    def _write_lyrics_to(audio: ID3, lyrics: str) -> None:
-        audio.delall("USLT")
-        audio.delall("TXXX:Lyrics")
-        audio.add(USLT(encoding=1, lang="eng", desc="", text=lyrics))
-        audio.add(TXXX(encoding=1, desc="Lyrics", text=lyrics))
-
-    def write_all(
-        self,
-        file_path: Path,
-        track: TrackInfo,
-        provenance: str,
-        *,
-        enriched: EnrichedInfo | None = None,
-        cover_bytes: bytes | None = None,
-        fallback_cover: bytes | None = None,
-        recording_id: str | None = None,
-        score: float = 0.0,
-        mb_data: MusicBrainzData | None = None,
-        artist_image: bytes | None = None,
-        lyrics: str | None = None,
-    ) -> None:
-        with _with_audio(file_path, "tags") as audio:
-            self._write_basic_to(audio, track, provenance)
-            self._write_full_to(
-                audio, track, enriched or EnrichedInfo(), cover_bytes, provenance,
-                fallback_cover=fallback_cover, mb_data=mb_data,
-            )
-            self._write_fingerprint_to(audio, recording_id=recording_id, score=score, mb_data=mb_data, cover_bytes=cover_bytes, artist_image=artist_image)
-            if lyrics:
-                self._write_lyrics_to(audio, lyrics)
+        # Lyrics
+        if lyrics:
+            audio.add(USLT(encoding=1, lang="eng", desc="", text=lyrics))
+            audio.add(TXXX(encoding=1, desc="Lyrics", text=lyrics))
 
 
 class NullTagger(TrackTagger):
     """No-op tagger (used when tagging is disabled)."""
 
-    def write_basic(self, file_path: Path, track: TrackInfo, provenance: str) -> None:
-        return None
-
-    def write_full(
-        self,
-        file_path: Path,
-        track: TrackInfo,
-        enriched: EnrichedInfo,
-        cover_bytes: bytes | None,
-        provenance: str,
-        *,
-        fallback_cover: bytes | None = None,
-    ) -> None:
-        return None
-
-    def embed_cover(self, file_path: Path, cover_bytes: bytes) -> None:
-        return None
-
-    def write_fingerprint_tags(
-        self,
-        file_path: Path,
-        *,
-        recording_id: str | None = None,
-        score: float = 0.0,
-        mb_data: MusicBrainzData | None = None,
-        cover_bytes: bytes | None = None,
-        artist_image: bytes | None = None,
-    ) -> None:
-        return None
-
-    def write_lyrics(self, file_path: Path, lyrics: str) -> None:
-        return None
-
-    def write_artist_image(self, file_path: Path, image_bytes: bytes) -> None:
-        return None
-
     def write_all(
         self,
         file_path: Path,
@@ -543,61 +356,4 @@ class NullTagger(TrackTagger):
         return None
 
 
-async def enrich_and_tag(
-    metadata_provider: MetadataProvider,
-    tagger: TrackTagger,
-    file_path: Path,
-    track: TrackInfo,
-    provenance: str,
-    *,
-    fallback_cover_path: Path | None = None,
-    embed_cover_art: bool = True,
-    logger: logging.Logger | None = None,
-) -> EnrichedInfo | None:
-    """Fetch iTunes metadata, download cover art, write enriched ID3 tags.
-
-    Returns the enriched info when a match was found, or ``None`` when no
-    metadata was returned (fallback cover is still embedded if configured).
-    """
-    info = await metadata_provider.fetch(track.artist, track.title)
-
-    fallback_cover: bytes | None = None
-    if fallback_cover_path is not None:
-        with contextlib.suppress(OSError):
-            fallback_cover = fallback_cover_path.read_bytes()
-
-    if info is None:
-        if fallback_cover and embed_cover_art:
-            try:
-                tagger.write_full(
-                    file_path,
-                    track,
-                    EnrichedInfo(),
-                    None,
-                    provenance,
-                    fallback_cover=fallback_cover,
-                )
-            except Exception as exc:
-                if logger:
-                    logger.warning(
-                        "[%s] fallback-cover embed failed %s: %s",
-                        track.stream_title,
-                        file_path.name,
-                        exc,
-                    )
-        return None
-
-    cover: bytes | None = None
-    if embed_cover_art and info.artwork_url:
-        cover = await metadata_provider.download_image(info.artwork_url)
-
-    try:
-        tagger.write_full(file_path, track, info, cover, provenance, fallback_cover=fallback_cover)
-    except Exception as exc:
-        if logger:
-            logger.warning("[%s] tag-enrichment failed %s: %s", track.stream_title, file_path.name, exc)
-
-    return info
-
-
-__all__ = ["ID3Tagger", "NullTagger", "TrackTagger", "_scale_cover", "enrich_and_tag"]
+__all__ = ["ID3Tagger", "NullTagger", "TrackTagger", "_scale_cover"]

@@ -314,16 +314,15 @@ class FileProcessor:
             self._cleanup_file(work_path)
             return
 
-        # ── Phase 1: CAA + MB + Deezer Artist Image parallel ──
+        # ── Phase 1: CAA + MB parallel (Artist-Image folgt in Phase 3) ──
         mb_data: MusicBrainzData | None = None
         cover_from_caa: bytes | None = None
-        _artist_img_for_caa: bytes | None = None
         if self._cover_provider and result.recording_id:
-            cover_from_caa, mb_data, _artist_img_for_caa = await _fetch_cover_data(
+            cover_from_caa, mb_data, _ = await _fetch_cover_data(
                 self._cover_provider,
                 result.recording_id,
-                self._popularity,
-                result.artist or "",
+                None,
+                "",
                 self._name,
                 self._log,
             )
@@ -356,7 +355,7 @@ class FileProcessor:
             except Exception:
                 self._log.debug("[%s] iTunes enrichment failed for %s", self._name, work_path.name)
 
-        async def _fetch_lyrics_wrapper() -> None:
+        async def _fetch_lyr() -> None:
             nonlocal lyrics
             if self._lyrics_provider is None:
                 return
@@ -364,16 +363,15 @@ class FileProcessor:
                 self._lyrics_provider, track.artist, track.title, self._log, self._name,
             )
 
-        async def _fetch_artist_image() -> None:
+        async def _fetch_art_img() -> None:
             nonlocal artist_image
             if not self._popularity or not result.artist:
                 return
-            try:
-                artist_image = await self._popularity.fetch_artist_image(result.artist)
-            except Exception:
-                self._log.debug("[%s] Artist image failed for %s", self._name, work_path.name)
+            artist_image = await _fetch_artist_image(
+                self._popularity, result.artist, self._name, self._log,
+            )
 
-        await asyncio.gather(_fetch_itunes(), _fetch_lyrics_wrapper(), _fetch_artist_image())
+        await asyncio.gather(_fetch_itunes(), _fetch_lyr(), _fetch_art_img())
 
         # ── Phase 4: Ziel-Pfad berechnen + Score-basierte Entscheidung ──
         provenance = f"{self._name}/{self._name}"
