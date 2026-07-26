@@ -16,7 +16,6 @@ from pathlib import Path
 
 from radio_ripper.domain.models import (
     EnrichedInfo,
-    FingerprintResult,
     MusicBrainzData,
     SavedTrack,
     TrackInfo,
@@ -107,18 +106,93 @@ class Uploader(BaseInboxProcessor):
             self._cleanup_file(proc_path)
             return
 
+        # ── Phase 1: CAA + MB parallel (nur recording_id-abhängig) ──
+        cover_from_caa: bytes | None = None
+        mb_data: MusicBrainzData | None = None
+        artist_image: bytes | None = None
+        if self._cover_provider and result.recording_id:
+            caa_mb_tasks: list = [
+                self._cover_provider.fetch_cover_by_recording_id(result.recording_id),
+                self._cover_provider.fetch_recording_data(result.recording_id),
+            ]
+            caa_mb_results = await asyncio.gather(*caa_mb_tasks, return_exceptions=True)
+            cover_from_caa = caa_mb_results[0] if not isinstance(caa_mb_results[0], BaseException) else None
+            mb_data = caa_mb_results[1] if not isinstance(caa_mb_results[1], BaseException) else None
+
+        # ── Phase 2: MB-Korrektur (Artist/Title Swap-Fix, MB ist kanonisch) ──
+        from radio_ripper.services.track_processing import correct_fingerprint_result
+
+        corrected = correct_fingerprint_result(result, mb_data)
+        if corrected is not result:
+            self._log.info(
+                "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
+                self._name,
+                result.artist, corrected.artist,
+                result.title, corrected.title,
+            )
+            result = corrected
         stream_title = f"{result.artist} - {result.title}"
         track = TrackInfo.from_stream_title(stream_title)
+        self._log.info(
+            "[%s] AcoustID match (score=%.2f): %s - %s (rec=%s)",
+            self._name,
+            result.score, result.artist, result.title, result.recording_id,
+        )
 
-        # ── Ziel-Pfad bestimmen ──
+        # ── Phase 3: iTunes + Lyrics + Artist-Image parallel (mit korrigierten Werten) ──
+        enriched: EnrichedInfo | None = None
+        cover_from_enrich: bytes | None = None
+        lyrics: str | None = None
+
+        async def _fetch_itunes() -> None:
+            nonlocal enriched, cover_from_enrich
+            if not self._metadata:
+                return
+            try:
+                enriched = await self._metadata.fetch(result.artist, result.title)
+                if enriched and enriched.artwork_url:
+                    cover_from_enrich = await self._metadata.download_image(enriched.artwork_url)
+                if enriched:
+                    info_name = f"{enriched.artist or result.artist} - {enriched.title or result.title}"
+                    self._log.info(
+                        "[%s] Enriched: %s | album=%s year=%s cover=%s",
+                        self._name,
+                        info_name,
+                        enriched.album or "-",
+                        enriched.year or "-",
+                        "yes" if enriched.artwork_url else "no",
+                    )
+                else:
+                    self._log.info("[%s] no enrichment hit for %s", self._name, stream_title)
+            except Exception:
+                self._log.debug("[%s] enrichment failed for %s", self._name, proc_path.name)
+
+        async def _fetch_lyrics() -> None:
+            nonlocal lyrics
+            try:
+                lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
+                lyrics = await lyrics_provider.fetch(track.artist, track.title)
+            except Exception:
+                self._log.debug("[%s] Lyrics fetch failed for %s", self._name, proc_path.name)
+
+        async def _fetch_artist_image() -> None:
+            nonlocal artist_image
+            if not self._popularity_provider or not result.artist:
+                return
+            try:
+                artist_image = await self._popularity_provider.fetch_artist_image(result.artist)
+            except Exception:
+                self._log.debug("[%s] Artist image failed for %s", self._name, proc_path.name)
+
+        await asyncio.gather(_fetch_itunes(), _fetch_lyrics(), _fetch_artist_image())
+
+        # ── Phase 4: Ziel-Pfad bestimmen + Score-basierte Entscheidung ──
         target_path = compute_file_path(
             self._settings.destination,
             result.artist,
             result.title,
             stream_title,
         )
-
-        # ── Score-basierte Entscheidung ──
         if target_path.exists():
             existing_score = read_acoustid_score(target_path)
             if existing_score is not None and existing_score >= result.score:
@@ -164,29 +238,6 @@ class Uploader(BaseInboxProcessor):
             )
         except Exception as exc:
             self._log.warning("[%s] early db-register: %s", self._name, exc)
-
-        # ── iTunes-Enrichment (Daten holen, kein Tag-Schreiben) ──
-        enriched: EnrichedInfo | None = None
-        cover_from_enrich: bytes | None = None
-        if self._metadata:
-            try:
-                enriched = await self._metadata.fetch(result.artist, result.title)
-                if enriched and enriched.artwork_url:
-                    cover_from_enrich = await self._metadata.download_image(enriched.artwork_url)
-                if enriched:
-                    info_name = f"{enriched.artist or result.artist} - {enriched.title or result.title}"
-                    self._log.info(
-                        "[%s] Enriched: %s | album=%s year=%s cover=%s",
-                        self._name,
-                        info_name,
-                        enriched.album or "-",
-                        enriched.year or "-",
-                        "yes" if enriched.artwork_url else "no",
-                    )
-                else:
-                    self._log.info("[%s] no enrichment hit for %s", self._name, stream_title)
-            except Exception:
-                self._log.debug("[%s] enrichment failed for %s", self._name, untested.name)
 
         # ── Rename .untested.mp3 → .mp3 ──
         cleaned = untested.with_name(untested.stem.replace(".untested", "") + untested.suffix)
@@ -239,30 +290,6 @@ class Uploader(BaseInboxProcessor):
         except Exception as exc:
             self._log.debug("[%s] db update_enrichment: %s", self._name, exc)
 
-        # ── AcoustID Swap-Erkennung ──
-        if (
-            track.artist
-            and track.title
-            and result.artist.lower() == track.title.lower()
-            and result.title.lower() == track.artist.lower()
-        ):
-            self._log.warning(
-                "[%s] AcoustID artist/title swapped (%s / %s) — correcting",
-                self._name, result.artist, result.title,
-            )
-            result = FingerprintResult(
-                artist=track.artist,
-                title=track.title,
-                score=result.score,
-                recording_id=result.recording_id,
-            )
-
-        self._log.info(
-            "[%s] AcoustID match (score=%.2f): %s - %s (rec=%s)",
-            self._name,
-            result.score, result.artist, result.title, result.recording_id,
-        )
-
         # ── DB-update (fingerprint) ──
         try:
             await self._repo.update_fingerprint(
@@ -272,38 +299,6 @@ class Uploader(BaseInboxProcessor):
             )
         except Exception as exc:
             self._log.debug("[%s] db update_fingerprint: %s", self._name, exc)
-
-        # ── CAA Cover, MusicBrainz, Deezer Artist Image (parallel) ──
-        cover_from_caa: bytes | None = None
-        mb_data: MusicBrainzData | None = None
-        artist_image: bytes | None = None
-        if self._cover_provider and result.recording_id:
-            tasks: list = [
-                self._cover_provider.fetch_cover_by_recording_id(result.recording_id),
-                self._cover_provider.fetch_recording_data(result.recording_id),
-            ]
-            if self._popularity_provider and result.artist:
-                tasks.append(self._popularity_provider.fetch_artist_image(result.artist))
-            cov_results = await asyncio.gather(*tasks, return_exceptions=True)
-            cover_from_caa = cov_results[0] if not isinstance(cov_results[0], BaseException) else None
-            mb_data = cov_results[1] if not isinstance(cov_results[1], BaseException) else None
-            if len(cov_results) > 2:
-                artist_image = cov_results[2] if not isinstance(cov_results[2], BaseException) else None
-
-        # ── MB-Korrektur vor Popularität/Lyrics (MB-Daten sind kanonisch) ──
-        from radio_ripper.services.track_processing import correct_fingerprint_result
-
-        corrected = correct_fingerprint_result(result, mb_data)
-        if corrected is not result:
-            self._log.info(
-                "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
-                self._name,
-                result.artist, corrected.artist,
-                result.title, corrected.title,
-            )
-            result = corrected
-            stream_title = f"{result.artist} - {result.title}"
-            track = TrackInfo.from_stream_title(stream_title)
 
         # ── Popularität (Deezer) ──
         if self._settings.min_popularity_rank > 0 and self._popularity_provider and (result.artist or result.title):
@@ -376,14 +371,6 @@ class Uploader(BaseInboxProcessor):
                     await self._repo.remove(rec.station_name, rec.track.stream_title)
                 except Exception as exc:
                     self._log.debug("[%s] db remove unmatched for replacement: %s", self._name, exc)
-
-        # ── Lyrics ──
-        lyrics: str | None = None
-        try:
-            lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
-            lyrics = await lyrics_provider.fetch(track.artist, track.title)
-        except Exception:
-            self._log.debug("[%s] Lyrics fetch failed for %s", self._name, final_path.name)
 
         # ── EIN Tag-Schreib-Durchgang ──
         final_cover = cover_from_caa or cover_from_enrich

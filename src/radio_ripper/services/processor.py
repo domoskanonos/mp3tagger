@@ -115,21 +115,68 @@ class FileProcessor(BaseInboxProcessor):
             self._cleanup_file(work_path)
             return
 
-        # ── TrackInfo aus Acoustic-Ergebnis ──
+        # ── Phase 1: CAA + MB parallel (nur recording_id-abhängig) ──
+        mb_data: MusicBrainzData | None = None
+        cover_from_caa: bytes | None = None
+        if self._cover_provider and result.recording_id:
+            tasks: list = [
+                self._cover_provider.fetch_cover_by_recording_id(result.recording_id),
+                self._cover_provider.fetch_recording_data(result.recording_id),
+            ]
+            cov_results = await asyncio.gather(*tasks, return_exceptions=True)
+            cover_from_caa = cov_results[0] if not isinstance(cov_results[0], BaseException) else None
+            mb_data = cov_results[1] if not isinstance(cov_results[1], BaseException) else None
+
+        # ── Phase 2: MB-Korrektur (Artist/Title Swap-Fix, MB ist kanonisch) ──
+        from radio_ripper.services.track_processing import correct_fingerprint_result
+
+        corrected = correct_fingerprint_result(result, mb_data)
+        if corrected is not result:
+            self._log.info(
+                "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
+                self._name,
+                result.artist, corrected.artist,
+                result.title, corrected.title,
+            )
+            result = corrected
         stream_title = f"{result.artist} - {result.title}"
         track = TrackInfo.from_stream_title(stream_title)
 
-        # ── iTunes-Enrichment (nur Daten holen, kein Tag-Schreiben) ──
+        # ── Phase 3: iTunes + Lyrics + Artist-Image parallel (mit korrigierten Werten) ──
         enriched: EnrichedInfo | None = None
         cover_from_enrich: bytes | None = None
-        try:
-            enriched = await self._metadata.fetch(result.artist, result.title)
-            if enriched and enriched.artwork_url:
-                cover_from_enrich = await self._metadata.download_image(enriched.artwork_url)
-        except Exception:
-            self._log.debug("[%s] iTunes enrichment failed for %s", self._name, work_path.name)
+        artist_image: bytes | None = None
+        lyrics: str | None = None
 
-        # ── Ziel-Pfad berechnen ──
+        async def _fetch_itunes() -> None:
+            nonlocal enriched, cover_from_enrich
+            try:
+                enriched = await self._metadata.fetch(result.artist, result.title)
+                if enriched and enriched.artwork_url:
+                    cover_from_enrich = await self._metadata.download_image(enriched.artwork_url)
+            except Exception:
+                self._log.debug("[%s] iTunes enrichment failed for %s", self._name, work_path.name)
+
+        async def _fetch_lyrics() -> None:
+            nonlocal lyrics
+            try:
+                lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
+                lyrics = await lyrics_provider.fetch(track.artist, track.title)
+            except Exception:
+                self._log.debug("[%s] Lyrics fetch failed for %s", self._name, work_path.name)
+
+        async def _fetch_artist_image() -> None:
+            nonlocal artist_image
+            if not self._popularity or not result.artist:
+                return
+            try:
+                artist_image = await self._popularity.fetch_artist_image(result.artist)
+            except Exception:
+                self._log.debug("[%s] Artist image failed for %s", self._name, work_path.name)
+
+        await asyncio.gather(_fetch_itunes(), _fetch_lyrics(), _fetch_artist_image())
+
+        # ── Phase 4: Ziel-Pfad berechnen + Score-basierte Entscheidung ──
         provenance = f"{self._name}/{self._name}"
         album = enriched.album if enriched and enriched.album else None
         final_path = compute_file_path(
@@ -140,7 +187,6 @@ class FileProcessor(BaseInboxProcessor):
             album=album,
         )
 
-        # ── Score-basierte Entscheidung ──
         delete_old: Path | None = None
         if final_path.exists():
             existing_score = read_acoustid_score(final_path)
@@ -161,45 +207,6 @@ class FileProcessor(BaseInboxProcessor):
                 existing_score or 0.0,
             )
             delete_old = final_path
-
-        # ── CAA, MusicBrainz, Künstlerbild (kein Tag-Schreiben) ──
-        mb_data: MusicBrainzData | None = None
-        cover_from_caa: bytes | None = None
-        artist_image: bytes | None = None
-        if self._cover_provider and result.recording_id:
-            tasks: list = [
-                self._cover_provider.fetch_cover_by_recording_id(result.recording_id),
-                self._cover_provider.fetch_recording_data(result.recording_id),
-            ]
-            if self._popularity and result.artist:
-                tasks.append(self._popularity.fetch_artist_image(result.artist))
-            cov_results = await asyncio.gather(*tasks, return_exceptions=True)
-            cover_from_caa = cov_results[0] if not isinstance(cov_results[0], BaseException) else None
-            mb_data = cov_results[1] if not isinstance(cov_results[1], BaseException) else None
-            if len(cov_results) > 2:
-                artist_image = cov_results[2] if not isinstance(cov_results[2], BaseException) else None
-
-        # ── MB-Korrektur vor Popularität/Lyrics (MB-Daten sind kanonisch) ──
-        from radio_ripper.services.track_processing import correct_fingerprint_result
-
-        corrected = correct_fingerprint_result(result, mb_data)
-        if corrected is not result:
-            self._log.info(
-                "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
-                self._name,
-                result.artist, corrected.artist,
-                result.title, corrected.title,
-            )
-            result = corrected
-            stream_title = f"{result.artist} - {result.title}"
-            track = TrackInfo.from_stream_title(stream_title)
-            final_path = compute_file_path(
-                self._settings.destination,
-                result.artist,
-                result.title,
-                stream_title,
-                album=album,
-            )
 
         # ── Rename .processing → .mp3 ──
         stage_path = work_path
@@ -235,14 +242,6 @@ class FileProcessor(BaseInboxProcessor):
             )
             if deleted:
                 return
-
-        # ── Lyrics ──
-        lyrics: str | None = None
-        try:
-            lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
-            lyrics = await lyrics_provider.fetch(track.artist, track.title)
-        except Exception:
-            self._log.debug("[%s] Lyrics fetch failed for %s", self._name, stage_path.name)
 
         # ── EIN Tag-Schreib-Durchgang ──
         final_cover = cover_from_caa or cover_from_enrich

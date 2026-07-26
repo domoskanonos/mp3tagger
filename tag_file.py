@@ -83,40 +83,19 @@ async def tag_single_file(
         result.score, artist, title, result.recording_id,
     )
 
-    # ── TrackInfo from result ──
-    track = TrackInfo.from_stream_title(f"{artist} - {title}")
-
-    # ── iTunes enrichment (data only) ──
-    enriched: EnrichedInfo | None = None
-    cover_from_enrich: bytes | None = None
-    if metadata:
-        try:
-            enriched = await metadata.fetch(artist, title)
-            if enriched and enriched.artwork_url:
-                cover_from_enrich = await metadata.download_image(enriched.artwork_url)
-        except Exception as exc:
-            logger.debug("iTunes enrichment failed: %s", exc)
-
-    # ── CAA cover + MB data + artist image (parallel) ──
+    # ── Phase 1: CAA + MB parallel (nur recording_id-abhängig) ──
     mb_data: MusicBrainzData | None = None
     cover_from_caa: bytes | None = None
-    artist_image: bytes | None = None
     if cover_archive and result.recording_id:
         import asyncio as _a
 
-        tasks: list = [
-            cover_archive.fetch_cover_by_recording_id(result.recording_id),
-            cover_archive.fetch_recording_data(result.recording_id),
-        ]
-        if popularity and artist:
-            tasks.append(popularity.fetch_artist_image(artist))
-        cov_results = await _a.gather(*tasks, return_exceptions=True)
+        caa_task = cover_archive.fetch_cover_by_recording_id(result.recording_id)
+        mb_task = cover_archive.fetch_recording_data(result.recording_id)
+        cov_results = await _a.gather(caa_task, mb_task, return_exceptions=True)
         cover_from_caa = cov_results[0] if not isinstance(cov_results[0], BaseException) else None
         mb_data = cov_results[1] if not isinstance(cov_results[1], BaseException) else None
-        if len(cov_results) > 2:
-            artist_image = cov_results[2] if not isinstance(cov_results[2], BaseException) else None
 
-    # ── MB-Korrektur vor Lyrics (MB-Daten sind kanonisch) ──
+    # ── Phase 2: MB-Korrektur (Artist/Title Swap-Fix, MB ist kanonisch) ──
     corrected = correct_fingerprint_result(result, mb_data)
     if corrected is not result:
         logger.info(
@@ -127,17 +106,46 @@ async def tag_single_file(
         result = corrected
         artist = result.artist
         title = result.title
-        track = TrackInfo.from_stream_title(f"{artist} - {title}")
+    track = TrackInfo.from_stream_title(f"{artist} - {title}")
 
-    # ── Lyrics ──
+    # ── Phase 3: iTunes + Lyrics + Artist-Image parallel (mit korrigierten Werten) ──
+    enriched: EnrichedInfo | None = None
+    cover_from_enrich: bytes | None = None
+    artist_image: bytes | None = None
     lyrics: str | None = None
-    try:
-        lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
-        lyrics = await lyrics_provider.fetch(artist, title)
-    except Exception as exc:
-        logger.debug("Lyrics fetch failed: %s", exc)
+    import asyncio as _a
 
-    # ── EIN Tag-Schreib-Durchgang ──
+    async def _fetch_itunes() -> None:
+        nonlocal enriched, cover_from_enrich
+        if not metadata:
+            return
+        try:
+            enriched = await metadata.fetch(artist, title)
+            if enriched and enriched.artwork_url:
+                cover_from_enrich = await metadata.download_image(enriched.artwork_url)
+        except Exception as exc:
+            logger.debug("iTunes enrichment failed: %s", exc)
+
+    async def _fetch_lyrics() -> None:
+        nonlocal lyrics
+        try:
+            lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
+            lyrics = await lyrics_provider.fetch(artist, title)
+        except Exception as exc:
+            logger.debug("Lyrics fetch failed: %s", exc)
+
+    async def _fetch_artist_image() -> None:
+        nonlocal artist_image
+        if not popularity or not artist:
+            return
+        try:
+            artist_image = await popularity.fetch_artist_image(artist)
+        except Exception as exc:
+            logger.debug("Artist image fetch failed: %s", exc)
+
+    await _a.gather(_fetch_itunes(), _fetch_lyrics(), _fetch_artist_image())
+
+    # ── Phase 4: Merge + EIN Tag-Schreib-Durchgang ──
     provenance = "tag-file/standalone"
     final_cover = cover_from_caa or cover_from_enrich
     try:

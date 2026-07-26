@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -20,6 +21,19 @@ from radio_ripper.infra.http import AsyncHttpClient
 from radio_ripper.infra.resilience import retry_async
 
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+
+_PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
+
+
+def _strip_parens(text: str) -> str:
+    """Remove parenthesized/bracketed substrings and collapse whitespace.
+
+    iTunes Search is exact-token strict: "I See a Dark(er)ness" yields 0
+    hits while "I See a Darkness" matches. This normalizer powers the
+    fallback query when the primary query returns nothing.
+    """
+    cleaned = _PARENS_RE.sub("", text)
+    return re.sub(r"\s+", " ", cleaned)
 
 
 class MetadataProvider(ABC):
@@ -53,18 +67,13 @@ class ITunesMetadataProvider(MetadataProvider):
         query = f"{artist} {title}".strip()
         if not query:
             return None
-        try:
-            payload = await self._client.get_json(
-                ITUNES_SEARCH_URL,
-                params={"term": query, "limit": 1, "entity": "song", "media": "music"},
-                timeout=self._metadata_timeout,
-            )
-        except Exception:
+        hit = await self._search_one(query)
+        if hit is None and title:
+            stripped = _strip_parens(f"{artist} {title}").strip()
+            if stripped and stripped != query:
+                hit = await self._search_one(stripped)
+        if hit is None:
             return None
-        results: list[dict[str, Any]] = (payload or {}).get("results") or []
-        if not results:
-            return None
-        hit = results[0]
         artwork = hit.get("artworkUrl100") or hit.get("artworkUrl60")
         if artwork:
             artwork = self._upgrade_artwork(artwork)
@@ -92,6 +101,19 @@ class ITunesMetadataProvider(MetadataProvider):
             artwork_url=artwork,
             itunes_data=itunes_data,
         )
+
+    async def _search_one(self, query: str) -> dict[str, Any] | None:
+        """Run a single iTunes search; return the first hit or ``None``."""
+        try:
+            payload = await self._client.get_json(
+                ITUNES_SEARCH_URL,
+                params={"term": query, "limit": 1, "entity": "song", "media": "music"},
+                timeout=self._metadata_timeout,
+            )
+        except Exception:
+            return None
+        results: list[dict[str, Any]] = (payload or {}).get("results") or []
+        return results[0] if results else None
 
     async def download_image(self, url: str) -> bytes | None:
         try:
