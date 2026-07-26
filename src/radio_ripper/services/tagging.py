@@ -35,6 +35,8 @@ from mutagen.id3 import (
     TIT2,
     TLEN,
     TPE1,
+    TPE2,
+    TPOS,
     TPUB,
     TRCK,
     TRSN,
@@ -196,6 +198,7 @@ class ID3Tagger(TrackTagger):
         audio.delall("TXXX:RIPPEDBY")
         if track.artist:
             audio.add(TPE1(encoding=3, text=track.artist))
+            audio.add(TPE2(encoding=3, text=track.artist))
         if track.title:
             audio.add(TIT2(encoding=3, text=track.title))
         # Album fallback: prefer the song title (without artist) over empty,
@@ -233,6 +236,7 @@ class ID3Tagger(TrackTagger):
         audio.delall("TCON")
         audio.delall("TDRC")
         audio.delall("TRCK")
+        audio.delall("TPOS")
         audio.delall("TRSN")
         audio.delall("TPUB")
         audio.delall("COMM")
@@ -253,6 +257,7 @@ class ID3Tagger(TrackTagger):
         title = enriched.title or track.title
         if artist:
             audio.add(TPE1(encoding=3, text=artist))
+            audio.add(TPE2(encoding=3, text=artist))
         if title:
             audio.add(TIT2(encoding=3, text=title))
         if enriched.album:
@@ -277,6 +282,8 @@ class ID3Tagger(TrackTagger):
             if enriched.disc_number is not None:
                 trck = f"{enriched.disc_number}/{trck}"
             audio.add(TRCK(encoding=3, text=trck))
+        if enriched.disc_number is not None:
+            audio.add(TPOS(encoding=3, text=str(enriched.disc_number)))
         if enriched.track_length is not None:
             audio.add(TLEN(encoding=3, text=str(enriched.track_length)))
         audio.add(COMM(encoding=3, lang="eng", desc="", text="Recorded via radiostream"))
@@ -370,17 +377,26 @@ class ID3Tagger(TrackTagger):
             audio = _load_or_create(file_path)
         except Exception as exc:
             raise TaggingError(f"failed to load {file_path} for MB metadata: {exc}") from exc
-        audio.delall("TPUB")
         audio.delall("TSRC")
         audio.delall("TLEN")
         audio.delall("TXXX:MusicBrainz Release Id")
         audio.delall("TXXX:MusicBrainz Release Group Type")
         audio.delall("TXXX:MusicBrainz Genres")
+        audio.delall("TXXX:MusicBrainz Release Title")
+        audio.delall("TXXX:MusicBrainz Release Date")
+        audio.delall("TXXX:MusicBrainz Album Release Country")
         audio.delall("TXXX:CatalogNumber")
         audio.delall("TXXX:Barcode")
 
         if mb_data.release_label:
+            audio.delall("TPUB")
             audio.add(TPUB(encoding=3, text=mb_data.release_label))
+        if mb_data.release_title:
+            audio.add(TXXX(encoding=3, desc="MusicBrainz Release Title", text=mb_data.release_title))
+        if mb_data.release_date:
+            audio.add(TXXX(encoding=3, desc="MusicBrainz Release Date", text=mb_data.release_date))
+        if mb_data.release_country:
+            audio.add(TXXX(encoding=3, desc="MusicBrainz Album Release Country", text=mb_data.release_country))
         if mb_data.isrcs:
             audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
         if mb_data.length_ms is not None:
@@ -429,16 +445,25 @@ class ID3Tagger(TrackTagger):
         audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
 
         if mb_data is not None:
-            audio.delall("TPUB")
             audio.delall("TSRC")
             audio.delall("TLEN")
             audio.delall("TXXX:MusicBrainz Release Id")
             audio.delall("TXXX:MusicBrainz Release Group Type")
             audio.delall("TXXX:MusicBrainz Genres")
+            audio.delall("TXXX:MusicBrainz Release Title")
+            audio.delall("TXXX:MusicBrainz Release Date")
+            audio.delall("TXXX:MusicBrainz Album Release Country")
             audio.delall("TXXX:CatalogNumber")
             audio.delall("TXXX:Barcode")
             if mb_data.release_label:
+                audio.delall("TPUB")
                 audio.add(TPUB(encoding=3, text=mb_data.release_label))
+            if mb_data.release_title:
+                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Title", text=mb_data.release_title))
+            if mb_data.release_date:
+                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Date", text=mb_data.release_date))
+            if mb_data.release_country:
+                audio.add(TXXX(encoding=3, desc="MusicBrainz Album Release Country", text=mb_data.release_country))
             if mb_data.isrcs:
                 audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
             if mb_data.length_ms is not None:

@@ -37,7 +37,7 @@ async def _run(settings: Settings, logger: logging.Logger) -> int:
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
-    client = HttpxAsyncClient(user_agent="Radio-Ripper-Tag/2.0")
+    client = HttpxAsyncClient()
 
     api_key = os.environ.get("ACOUSTID_API_KEY") or os.environ.get("ACCOUST_ID", "")
     if not api_key:
