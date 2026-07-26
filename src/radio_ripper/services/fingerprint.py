@@ -112,17 +112,9 @@ class AcoustidFingerprintProvider(FingerprintProvider):
         )
 
 
-class NullFingerprintProvider(FingerprintProvider):
-    """No-op provider used when AcoustID is disabled."""
-
-    async def fingerprint(self, path: Path) -> FingerprintResult | None:
-        return None
-
-
 __all__ = [
     "AcoustidFingerprintProvider",
     "FingerprintError",
     "FingerprintProvider",
     "NonRetriableFingerprintError",
-    "NullFingerprintProvider",
 ]

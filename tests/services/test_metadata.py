@@ -9,7 +9,6 @@ from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.services.metadata import (
     CoverArtArchiveProvider,
     ITunesMetadataProvider,
-    NullMetadataProvider,
     _strip_parens,
 )
 
@@ -221,11 +220,4 @@ class TestCoverArtArchiveProvider:
         await client.aclose()
 
 
-class TestNullMetadataProvider:
-    async def test_fetch_returns_none(self):
-        p = NullMetadataProvider()
-        assert await p.fetch("A", "B") is None
 
-    async def test_download_image_returns_none(self):
-        p = NullMetadataProvider()
-        assert await p.download_image("http://x") is None

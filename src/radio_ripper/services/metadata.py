@@ -139,16 +139,6 @@ class ITunesMetadataProvider(MetadataProvider):
         )
 
 
-class NullMetadataProvider(MetadataProvider):
-    """No-op provider — used when enrichment is disabled in the config."""
-
-    async def fetch(self, artist: str, title: str) -> EnrichedInfo | None:
-        return None
-
-    async def download_image(self, url: str) -> bytes | None:
-        return None
-
-
 class CoverArtProvider(ABC):
     """Fetch cover art and recording metadata via MusicBrainz / Cover Art Archive."""
 
@@ -159,16 +149,6 @@ class CoverArtProvider(ABC):
     @abstractmethod
     async def fetch_recording_data(self, recording_id: str) -> MusicBrainzData | None:
         """Return detailed MusicBrainz metadata for a recording MBID."""
-
-
-class NullCoverArtProvider(CoverArtProvider):
-    """No-op provider — used when CAA is disabled."""
-
-    async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
-        return None
-
-    async def fetch_recording_data(self, recording_id: str) -> MusicBrainzData | None:
-        return None
 
 
 class CoverArtArchiveProvider(CoverArtProvider):
@@ -346,6 +326,4 @@ __all__ = [
     "CoverArtProvider",
     "ITunesMetadataProvider",
     "MetadataProvider",
-    "NullCoverArtProvider",
-    "NullMetadataProvider",
 ]

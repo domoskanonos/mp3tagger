@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-import warnings
-from unittest.mock import MagicMock, patch
-
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore", DeprecationWarning)
-    import pydub.audio_segment  # noqa: F401
-
 from radio_ripper.services.storage import (
     compute_file_path,
     read_acoustid_score,
     remove_empty_parents,
-    remux_mp3,
     sanitize_filename,
 )
 
@@ -62,25 +54,7 @@ class TestComputeFilePath:
         (tmp_path / "Artist").mkdir()
         (tmp_path / "Artist" / "Artist - Song.mp3").write_text("old")
         p = compute_file_path(tmp_path, "Artist", "Song", "x")
-        # Always returns canonical path — overwrite decision is made by the caller
         assert p == tmp_path / "Artist" / "Artist - Song.mp3"
-
-
-class TestRemuxMp3:
-    @patch("pydub.AudioSegment.from_file", return_value=MagicMock())
-    def test_remux_success(self, mock_from_file, tmp_path):
-        src = tmp_path / "test.mp3"
-        src.write_text("data")
-        mock_from_file.return_value = MagicMock()
-        remux_mp3(src)
-        assert src.exists()
-
-    @patch("pydub.AudioSegment")
-    def test_remux_import_error(self, mock_segment, tmp_path):
-        src = tmp_path / "test.mp3"
-        src.write_text("data")
-        remux_mp3(src)
-        assert src.exists()
 
 
 class TestReadAcoustidScore:
@@ -100,7 +74,7 @@ class TestReadAcoustidScore:
         assert read_acoustid_score(f) == 0.95
 
     def test_returns_none_when_file_missing(self, tmp_path):
-        assert read_acoustid_score(tmp_path / "nonexistent.mp3") is None
+        assert read_acoustid_score(tmp_path / "nonextistent.mp3") is None
 
 
 class TestRemoveEmptyParents:
@@ -111,5 +85,4 @@ class TestRemoveEmptyParents:
         f.write_text("x")
         f.unlink()
         remove_empty_parents(f, tmp_path)
-        assert not d.exists()  # c was removed
-        # a and b might still exist because rmdir stops at first non-empty
+        assert not d.exists()

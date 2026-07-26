@@ -335,25 +335,4 @@ class ID3Tagger(TrackTagger):
             audio.add(TXXX(encoding=1, desc="Lyrics", text=lyrics))
 
 
-class NullTagger(TrackTagger):
-    """No-op tagger (used when tagging is disabled)."""
-
-    def write_all(
-        self,
-        file_path: Path,
-        track: TrackInfo,
-        provenance: str,
-        *,
-        enriched: EnrichedInfo | None = None,
-        cover_bytes: bytes | None = None,
-        fallback_cover: bytes | None = None,
-        recording_id: str | None = None,
-        score: float = 0.0,
-        mb_data: MusicBrainzData | None = None,
-        artist_image: bytes | None = None,
-        lyrics: str | None = None,
-    ) -> None:
-        return None
-
-
-__all__ = ["ID3Tagger", "NullTagger", "TrackTagger", "_scale_cover"]
+__all__ = ["ID3Tagger", "TrackTagger", "_scale_cover"]

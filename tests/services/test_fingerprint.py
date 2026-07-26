@@ -11,15 +11,7 @@ import pytest
 from radio_ripper.services.fingerprint import (
     AcoustidFingerprintProvider,
     FingerprintError,
-    NullFingerprintProvider,
 )
-
-
-class TestNullFingerprintProvider:
-    async def test_always_returns_none(self) -> None:
-        nfp = NullFingerprintProvider()
-        result = await nfp.fingerprint(Path("/tmp/test.mp3"))
-        assert result is None
 
 
 class TestAcoustidFingerprintProvider:

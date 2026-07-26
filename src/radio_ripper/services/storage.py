@@ -63,20 +63,6 @@ def read_acoustid_score(path: Path) -> float | None:
     return None
 
 
-def remux_mp3(path: Path) -> None:
-    tmp = path.with_suffix(".remux.tmp")
-    try:
-        from pydub import AudioSegment
-
-        audio = AudioSegment.from_file(str(path), format="mp3")
-        audio.export(str(tmp), format="mp3", tags={})
-        tmp.replace(path)
-    except ImportError:
-        pass
-    except Exception:
-        safe_unlink(tmp)
-
-
 def safe_unlink(path: Path, *, parents_root: Path | None = None) -> None:
     """Remove *path* and optionally its empty ancestor directories up to *parents_root*."""
     with contextlib.suppress(OSError):
@@ -99,7 +85,6 @@ __all__ = [
     "compute_file_path",
     "read_acoustid_score",
     "remove_empty_parents",
-    "remux_mp3",
     "safe_unlink",
     "sanitize_filename",
 ]

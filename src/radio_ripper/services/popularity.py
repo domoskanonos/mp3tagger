@@ -32,16 +32,6 @@ class PopularityProvider(ABC):
         """Return artist portrait bytes or ``None``."""
 
 
-class NullPopularityProvider(PopularityProvider):
-    """No-op provider — used when popularity checking is disabled."""
-
-    async def get_rank(self, artist: str, title: str) -> int | None:
-        return None
-
-    async def fetch_artist_image(self, artist: str) -> bytes | None:
-        return None
-
-
 class DeezerPopularityChecker(PopularityProvider):
     """Check track popularity and fetch artist images via the public Deezer API.
 
@@ -142,7 +132,6 @@ async def maybe_delete_obscure(
 
 __all__ = [
     "DeezerPopularityChecker",
-    "NullPopularityProvider",
     "PopularityProvider",
     "maybe_delete_obscure",
 ]
