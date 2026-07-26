@@ -190,14 +190,24 @@ class CoverArtArchiveProvider(CoverArtProvider):
         """
         if not recording_id:
             return None
-        releases = await self._fetch_recording_releases(
-            recording_id,
-            extra_inc="releases+isrcs+genres",
-        )
+        releases = await self._fetch_recording_releases(recording_id)
         if releases is None:
             return None
 
         payload = self._recording_cache.get(recording_id, {})
+
+        recording_title: str | None = payload.get("title")
+        recording_artist: str | None = None
+        with contextlib.suppress(Exception):
+            credits = payload.get("artist-credit") or []
+            parts: list[str] = []
+            for c in credits:
+                if isinstance(c, dict):
+                    parts.append(c.get("name", ""))
+                    parts.append(c.get("joinphrase", ""))
+                elif isinstance(c, str):
+                    parts.append(c)
+            recording_artist = "".join(parts).strip() or None
 
         isrcs: tuple[str, ...] = ()
         with contextlib.suppress(Exception):
@@ -244,6 +254,8 @@ class CoverArtArchiveProvider(CoverArtProvider):
 
         return MusicBrainzData(
             recording_id=recording_id,
+            recording_title=recording_title,
+            recording_artist=recording_artist,
             length_ms=length_ms,
             isrcs=isrcs,
             genres=genres,
@@ -282,7 +294,7 @@ class CoverArtArchiveProvider(CoverArtProvider):
     async def _fetch_recording_releases(
         self,
         recording_id: str,
-        extra_inc: str = "releases",
+        extra_inc: str = "artists+releases+isrcs+genres",
     ) -> list[dict[str, Any]] | None:
         """Fetch the recording JSON and return its release list.
 

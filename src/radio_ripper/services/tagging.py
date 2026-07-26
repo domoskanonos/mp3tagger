@@ -234,12 +234,16 @@ class ID3Tagger(TrackTagger):
         provenance: str,
         *,
         fallback_cover: bytes | None = None,
+        mb_data: MusicBrainzData | None = None,
     ) -> None:
         try:
             audio = _load_or_create(file_path)
         except Exception as exc:
             raise TaggingError(f"failed to load {file_path}: {exc}") from exc
-        self._write_full_to(audio, track, enriched, cover_bytes, provenance, fallback_cover=fallback_cover)
+        self._write_full_to(
+            audio, track, enriched, cover_bytes, provenance,
+            fallback_cover=fallback_cover, mb_data=mb_data,
+        )
         try:
             audio.save(file_path, v2_version=3, v1=2)
         except Exception as exc:
@@ -254,6 +258,7 @@ class ID3Tagger(TrackTagger):
         provenance: str,
         *,
         fallback_cover: bytes | None = None,
+        mb_data: MusicBrainzData | None = None,
     ) -> None:
         audio.delall("TPE1")
         audio.delall("TPE2")
@@ -286,14 +291,29 @@ class ID3Tagger(TrackTagger):
             audio.add(TPE2(encoding=3, text=artist))
         if title:
             audio.add(TIT2(encoding=3, text=title))
-        if enriched.album:
-            audio.add(TALB(encoding=3, text=enriched.album))
-        else:
-            audio.add(TALB(encoding=3, text=track.title or track.stream_title))
-        if enriched.year:
-            audio.add(TDRC(encoding=3, text=enriched.year))
-        if enriched.genre:
-            audio.add(TCON(encoding=3, text=enriched.genre))
+
+        # Album: enriched → mb_data → track fallback
+        album = enriched.album
+        if not album and mb_data and mb_data.release_title:
+            album = mb_data.release_title
+        if not album:
+            album = track.title or track.stream_title
+        if album:
+            audio.add(TALB(encoding=3, text=album))
+
+        # Year: enriched → mb_data.release_date
+        year = enriched.year
+        if not year and mb_data and mb_data.release_date:
+            year = mb_data.release_date[:4]
+        if year:
+            audio.add(TDRC(encoding=3, text=year))
+
+        # Genre: enriched → mb_data.genres
+        genre = enriched.genre
+        if not genre and mb_data and mb_data.genres:
+            genre = ", ".join(mb_data.genres)
+        if genre:
+            audio.add(TCON(encoding=3, text=genre))
         station_name = provenance.split("@")[0] if "@" in provenance else provenance
         audio.add(TRSN(encoding=3, text=station_name))
         if enriched.label:
@@ -495,7 +515,10 @@ class ID3Tagger(TrackTagger):
         except Exception as exc:
             raise TaggingError(f"failed to load {file_path}: {exc}") from exc
         self._write_basic_to(audio, track, provenance)
-        self._write_full_to(audio, track, enriched or EnrichedInfo(), cover_bytes, provenance, fallback_cover=fallback_cover)
+        self._write_full_to(
+            audio, track, enriched or EnrichedInfo(), cover_bytes, provenance,
+            fallback_cover=fallback_cover, mb_data=mb_data,
+        )
         self._write_fingerprint_to(audio, recording_id=recording_id, score=score, mb_data=mb_data, cover_bytes=cover_bytes, artist_image=artist_image)
         if lyrics:
             self._write_lyrics_to(audio, lyrics)

@@ -25,6 +25,7 @@ from radio_ripper.services.lyrics import LRCLibProvider
 from radio_ripper.services.metadata import CoverArtArchiveProvider, ITunesMetadataProvider
 from radio_ripper.services.popularity import DeezerPopularityChecker
 from radio_ripper.services.tagging import ID3Tagger
+from radio_ripper.services.track_processing import correct_fingerprint_result
 from radio_ripper.domain.models import EnrichedInfo, MusicBrainzData, TrackInfo
 
 
@@ -114,6 +115,19 @@ async def tag_single_file(
         mb_data = cov_results[1] if not isinstance(cov_results[1], BaseException) else None
         if len(cov_results) > 2:
             artist_image = cov_results[2] if not isinstance(cov_results[2], BaseException) else None
+
+    # ── MB-Korrektur vor Lyrics (MB-Daten sind kanonisch) ──
+    corrected = correct_fingerprint_result(result, mb_data)
+    if corrected is not result:
+        logger.info(
+            "MB corrected artist/title: %s -> %s / %s -> %s",
+            result.artist, corrected.artist,
+            result.title, corrected.title,
+        )
+        result = corrected
+        artist = result.artist
+        title = result.title
+        track = TrackInfo.from_stream_title(f"{artist} - {title}")
 
     # ── Lyrics ──
     lyrics: str | None = None

@@ -290,6 +290,21 @@ class Uploader(BaseInboxProcessor):
             if len(cov_results) > 2:
                 artist_image = cov_results[2] if not isinstance(cov_results[2], BaseException) else None
 
+        # ── MB-Korrektur vor Popularität/Lyrics (MB-Daten sind kanonisch) ──
+        from radio_ripper.services.track_processing import correct_fingerprint_result
+
+        corrected = correct_fingerprint_result(result, mb_data)
+        if corrected is not result:
+            self._log.info(
+                "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
+                self._name,
+                result.artist, corrected.artist,
+                result.title, corrected.title,
+            )
+            result = corrected
+            stream_title = f"{result.artist} - {result.title}"
+            track = TrackInfo.from_stream_title(stream_title)
+
         # ── Popularität (Deezer) ──
         if self._settings.min_popularity_rank > 0 and self._popularity_provider and (result.artist or result.title):
             deleted = await maybe_delete_obscure(

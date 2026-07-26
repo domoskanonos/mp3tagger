@@ -13,7 +13,13 @@ import logging
 import shutil
 from pathlib import Path
 
-from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, SavedTrack, TrackInfo
+from radio_ripper.domain.models import (
+    EnrichedInfo,
+    FingerprintResult,
+    MusicBrainzData,
+    SavedTrack,
+    TrackInfo,
+)
 from radio_ripper.infra.config import Settings
 from radio_ripper.services.fingerprint import (
     FingerprintError,
@@ -46,6 +52,31 @@ def _safe_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def correct_fingerprint_result(
+    result: FingerprintResult,
+    mb_data: MusicBrainzData | None,
+) -> FingerprintResult:
+    """Override AcoustID's text fields with canonical MB data when available.
+
+    MusicBrainz is the authoritative source for artist/title.  If MB has
+    *recording_artist* and *recording_title* that differ from what AcoustID
+    returned, the MB values win — even when AcoustID was not "swapped" (i.e.
+    this handles silent misidentification beyond the ICY-swap heuristic).
+    """
+    if mb_data and mb_data.recording_artist and mb_data.recording_title:
+        if (
+            result.artist.lower() != mb_data.recording_artist.lower()
+            or result.title.lower() != mb_data.recording_title.lower()
+        ):
+            return FingerprintResult(
+                artist=mb_data.recording_artist,
+                title=mb_data.recording_title,
+                score=result.score,
+                recording_id=result.recording_id,
+            )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +702,7 @@ async def apply_fingerprint_match(
 
 __all__ = [
     "apply_fingerprint_match",
+    "correct_fingerprint_result",
     "enrich_and_file",
     "enrich_song",
     "fingerprint_song",

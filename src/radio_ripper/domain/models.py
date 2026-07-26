@@ -54,6 +54,8 @@ class MusicBrainzData:
     """
 
     recording_id: str
+    recording_title: str | None = None
+    recording_artist: str | None = None
     length_ms: int | None = None
     isrcs: tuple[str, ...] = ()
     genres: tuple[str, ...] = ()
