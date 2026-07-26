@@ -13,6 +13,7 @@ import contextlib
 import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
 from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, MusicBrainzData, TrackInfo
 from radio_ripper.infra.config import Settings
@@ -135,12 +136,13 @@ async def _fetch_cover_data(
     tasks = [_fetch_cover(), _fetch_mb()]
     if popularity_provider is not None and artist:
         tasks.append(_fetch_artist_image(popularity_provider, artist, station_name, logger))
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    return (
-        results[0] if not isinstance(results[0], BaseException) else None,
-        results[1] if not isinstance(results[1], BaseException) else None,
-        results[2] if len(results) > 2 and not isinstance(results[2], BaseException) else None,
-    )
+    raw: list[Any] = await asyncio.gather(*tasks, return_exceptions=True)
+    cover_b: bytes | None = None if isinstance(raw[0], BaseException) else raw[0]
+    mb: MusicBrainzData | None = None if isinstance(raw[1], BaseException) else raw[1]
+    art: bytes | None = None
+    if len(raw) > 2 and not isinstance(raw[2], BaseException):
+        art = raw[2]
+    return cover_b, mb, art
 
 
 async def _fetch_lyrics(
@@ -374,7 +376,7 @@ class FileProcessor:
         track: TrackInfo,
         enriched: EnrichedInfo | None,
         work_path: Path,
-    ) -> tuple[str, Path, Path | None]:
+    ) -> tuple[str, Path | None, Path | None]:
         """Berechnet Zielpfad + Score-Vergleich mit bestehender Datei.
 
         Returns (provenance, final_path, delete_old).
