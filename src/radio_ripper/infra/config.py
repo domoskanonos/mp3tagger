@@ -17,17 +17,14 @@ class Settings(BaseModel):
     work_dir: Path = Field(default=Path("./work"))
     database: Path | None = None
 
-    min_file_size_bytes: int = Field(default=1024, ge=0)
     log_level: str = "INFO"
     log_file: Path | None = None
-    user_agent: str = "Radio-Ripper/2.0"
 
     fallback_cover_path: Path | None = None
     metadata_timeout: float = Field(default=8.0, ge=0.5)
     cover_timeout: float = Field(default=15.0, ge=0.5)
 
     mp3_inbox: Path | None = Field(default=None, alias="mp3_inbox")
-    min_duration_s: float = Field(default=45, ge=0)
     acoustid_min_score: float = Field(default=0.85, ge=0.0, le=1.0)
     min_popularity_rank: int = Field(default=100000, ge=0)
     enable_coverartarchive: bool = True

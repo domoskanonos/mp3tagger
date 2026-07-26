@@ -55,9 +55,9 @@ class AsyncHttpClient(ABC):
 class HttpxAsyncClient(AsyncHttpClient):
     """Default httpx-backed implementation."""
 
-    def __init__(self, *, user_agent: str = "Radio-Ripper/2.0", verify: bool = True) -> None:
+    def __init__(self, *, verify: bool = True) -> None:
         self._client = httpx.AsyncClient(
-            headers={"User-Agent": user_agent},
+            headers={"User-Agent": "Radio-Ripper-Tag/2.0"},
             verify=verify,
             follow_redirects=True,
             timeout=httpx.Timeout(30.0, connect=10.0),
