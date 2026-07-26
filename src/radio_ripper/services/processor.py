@@ -20,7 +20,7 @@ from radio_ripper.services.fingerprint import (
     FingerprintProvider,
     NonRetriableFingerprintError,
 )
-from radio_ripper.services.lyrics import LyricsOvhProvider
+from radio_ripper.services.lyrics import LRCLibProvider
 from radio_ripper.services.metadata import CoverArtProvider, MetadataProvider
 from radio_ripper.services.popularity import PopularityProvider
 from radio_ripper.services.repository import NullTrackRepository
@@ -198,7 +198,7 @@ class FileProcessor(BaseInboxProcessor):
 
         # ── Lyrics (in work_dir) ──
         try:
-            lyrics_provider = LyricsOvhProvider(HttpxAsyncClient(), timeout=5.0)
+            lyrics_provider = LRCLibProvider(HttpxAsyncClient(), timeout=5.0)
             lyrics = await lyrics_provider.fetch(track.artist, track.title)
             if lyrics:
                 self._tagger.write_lyrics(stage_path, lyrics)
