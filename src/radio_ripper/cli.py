@@ -18,10 +18,10 @@ from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.infra.logging import configure_logging
 from radio_ripper.services.fingerprint import AcoustidFingerprintProvider
 from radio_ripper.services.lyrics import LRCLibProvider
+from radio_ripper.services.metadata_deezer import DeezerMetadataProvider
 from radio_ripper.services.metadata_itunes import ITunesMetadataProvider
 from radio_ripper.services.metadata_musicbrainz import CoverArtArchiveProvider
 from radio_ripper.services.popularity import DeezerPopularityChecker, PopularityProvider
-from radio_ripper.services.metadata_deezer import DeezerCoverProvider
 from radio_ripper.services.processor import FileProcessor
 from radio_ripper.services.tagging import ID3Tagger
 
@@ -63,7 +63,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
 
     lyrics_provider = LRCLibProvider(client, timeout=5.0)
 
-    deezer_cover = DeezerCoverProvider(client, timeout=settings.cover_timeout)
+    deezer_provider = DeezerMetadataProvider(client, timeout=settings.cover_timeout)
 
     proc = FileProcessor(
         inbox=inbox,
@@ -75,7 +75,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
         name="tag",
         poll_interval=2.0,
         cover_provider=cover_archive,
-        deezer_cover_provider=deezer_cover,
+        deezer_provider=deezer_provider,
         popularity_provider=popularity,
         lyrics_provider=lyrics_provider,
         logger=logger,

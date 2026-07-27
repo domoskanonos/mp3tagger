@@ -24,7 +24,7 @@ from radio_ripper.services.fingerprint import (
     NonRetriableFingerprintError,
 )
 from radio_ripper.services.lyrics import LyricsProvider
-from radio_ripper.services.metadata_deezer import DeezerCoverProvider
+from radio_ripper.services.metadata_deezer import DeezerMetadataProvider
 from radio_ripper.services.metadata_itunes import MetadataProvider
 from radio_ripper.services.metadata_musicbrainz import CoverArtProvider
 from radio_ripper.services.popularity import PopularityProvider, maybe_delete_unpopular
@@ -194,7 +194,7 @@ class FileProcessor:
         name: str = "processor",
         poll_interval: float = 5.0,
         cover_provider: CoverArtProvider | None = None,
-        deezer_cover_provider: DeezerCoverProvider | None = None,
+        deezer_provider: DeezerMetadataProvider | None = None,
         popularity_provider: PopularityProvider | None = None,
         lyrics_provider: LyricsProvider | None = None,
         logger: logging.Logger | None = None,
@@ -211,7 +211,7 @@ class FileProcessor:
         self._metadata = metadata_provider
         self._tagger = tagger
         self._cover_provider = cover_provider
-        self._deezer_cover_provider = deezer_cover_provider
+        self._deezer_provider = deezer_provider
         self._popularity = popularity_provider
         self._lyrics_provider = lyrics_provider
 
@@ -501,16 +501,20 @@ class FileProcessor:
             if deleted:
                 return
 
-        # ── Phase 7: Einmaliger Tag-Schreib-Durchgang ──
-        final_cover = cover_from_caa or cover_from_enrich
-        if final_cover is None and self._deezer_cover_provider is not None and (result.artist or result.title):
+        # ── Phase 7: Deezer-Metadaten (Cover + Label + Genre + Jahr) ──
+        deezer_data = None
+        deezer_cover = None
+        if self._deezer_provider is not None and (result.artist or result.title):
             try:
-                deezer_cover = await self._deezer_cover_provider.fetch_cover(result.artist, result.title)
-                if deezer_cover is not None:
-                    final_cover = deezer_cover
-                    self._log.info("[%s] Deezer cover: %s", self._name, stage_path.name)
+                deezer_data = await self._deezer_provider.fetch(result.artist, result.title)
+                if deezer_data:
+                    deezer_cover = deezer_data.cover_bytes
             except Exception:
-                self._log.debug("[%s] Deezer cover fetch failed", self._name)
+                self._log.debug("[%s] Deezer fetch failed", self._name)
+
+        # ── Phase 8: Cover-Auswahl (Deezer → CAA → iTunes) ──
+        final_cover = deezer_cover or cover_from_caa or cover_from_enrich
+
         try:
             self._tagger.write_all(
                 stage_path,
@@ -523,6 +527,7 @@ class FileProcessor:
                 mb_data=mb_data,
                 artist_image=artist_image,
                 lyrics=lyrics,
+                deezer=deezer_data,
             )
             if final_cover is not None:
                 self._log.info("[%s] Cover embedded: %s", self._name, stage_path.name)

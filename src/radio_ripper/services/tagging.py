@@ -24,8 +24,8 @@ import contextlib
 import io
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from mutagen.id3 import (
     APIC,
@@ -50,6 +50,7 @@ from mutagen.id3 import (
 
 from radio_ripper.domain.models import EnrichedInfo, MusicBrainzData, TrackInfo
 from radio_ripper.infra.errors import TaggingError
+from radio_ripper.services.metadata_deezer import DeezerData
 
 _MIN_COVER_PX = 500
 _MAX_COVER_PX = 1000
@@ -205,6 +206,7 @@ class TrackTagger(ABC):
         mb_data: MusicBrainzData | None = None,
         artist_image: bytes | None = None,
         lyrics: str | None = None,
+        deezer: DeezerData | None = None,
     ) -> None:
         """Schreibt ALLE Tags in einem einzigen Durchgang."""
 
@@ -228,6 +230,7 @@ class ID3Tagger(TrackTagger):
         mb_data: MusicBrainzData | None = None,
         artist_image: bytes | None = None,
         lyrics: str | None = None,
+        deezer: DeezerData | None = None,
     ) -> None:
         enriched = enriched or EnrichedInfo()
         with _tag_edit_context(file_path, "tags") as audio:
@@ -242,6 +245,7 @@ class ID3Tagger(TrackTagger):
                 mb_data=mb_data,
                 artist_image=artist_image,
                 lyrics=lyrics,
+                deezer=deezer,
             )
 
     @staticmethod
@@ -257,6 +261,7 @@ class ID3Tagger(TrackTagger):
         mb_data: MusicBrainzData | None,
         artist_image: bytes | None,
         lyrics: str | None,
+        deezer: DeezerData | None = None,
     ) -> None:
         """Schreibt ID3-Frames mergend in das *audio*-Objekt.
 
@@ -266,10 +271,7 @@ class ID3Tagger(TrackTagger):
 
         def _set_frame(frame_id: str, factory: Any, new_value: object) -> None:
             current = audio.get(frame_id)
-            if current is not None:
-                old = str(current)
-            else:
-                old = ""
+            old = str(current) if current is not None else ""
             new = str(new_value)
             if new != old:
                 audio.delall(frame_id)
@@ -283,8 +285,10 @@ class ID3Tagger(TrackTagger):
         if track.title:
             _set_frame("TIT2", TIT2, track.title)
 
-        # Album: enriched → mb_data → track-Titel als Fallback → vorhanden
-        album = enriched.album
+        # Album: deezer → enriched → mb_data → track-Titel → vorhanden
+        album = deezer.album if deezer else None
+        if not album:
+            album = enriched.album
         if not album and mb_data and mb_data.release_title:
             album = mb_data.release_title
         if not album:
@@ -292,15 +296,19 @@ class ID3Tagger(TrackTagger):
         if album:
             _set_frame("TALB", TALB, album)
 
-        # Jahr: enriched → mb_data.release_date
-        year = enriched.year
+        # Jahr: deezer → enriched → mb_data → vorhanden
+        year = deezer.year if deezer else None
+        if not year:
+            year = enriched.year
         if not year and mb_data and mb_data.release_date:
             year = mb_data.release_date[:4]
         if year:
             _set_frame("TDRC", TDRC, year)
 
-        # Genre: enriched → mb_data.genres → vorhanden (nicht überschreiben)
-        genre = enriched.genre
+        # Genre: deezer → enriched → mb_data → vorhanden
+        genre = deezer.genre if deezer else None
+        if not genre:
+            genre = enriched.genre
         if not genre and mb_data and mb_data.genres:
             genre = ", ".join(mb_data.genres)
         if not genre:
@@ -310,11 +318,11 @@ class ID3Tagger(TrackTagger):
 
         _set_frame("TRSN", TRSN, _station_name(provenance))
 
-        # Label: mb_data.release_label → enriched.label → vorhanden (nie [no label])
-        label = None
-        if mb_data and mb_data.release_label:
-            label = mb_data.release_label
-        elif enriched.label:
+        # Label: deezer → mb_data → enriched → vorhanden (nie [no label])
+        label = deezer.label if deezer else None
+        if not label or label in ("[no label]", "[none]"):
+            label = mb_data.release_label if mb_data else None
+        if not label or label in ("[no label]", "[none]"):
             label = enriched.label
         if not label or label in ("[no label]", "[none]"):
             label = _existing_text(audio, "TPUB")
@@ -330,10 +338,12 @@ class ID3Tagger(TrackTagger):
         if enriched.disc_number is not None:
             _set_frame("TPOS", TPOS, str(enriched.disc_number))
 
-        # Titel-Länge: mb_data.length_ms → enriched.track_length (MB hat Vorrang)
+        # Titel-Länge: mb_data → deezer → enriched
         length = None
         if mb_data and mb_data.length_ms is not None:
             length = mb_data.length_ms
+        elif deezer and deezer.duration_s is not None:
+            length = deezer.duration_s * 1000
         elif enriched.track_length is not None:
             length = enriched.track_length
         if length is not None:
@@ -394,7 +404,8 @@ class ID3Tagger(TrackTagger):
             for tag_key, mbs, desc in (
                 ("TXXX:MusicBrainz Release Title", mb_data.release_title, "MusicBrainz Release Title"),
                 ("TXXX:MusicBrainz Release Date", mb_data.release_date, "MusicBrainz Release Date"),
-                ("TXXX:MusicBrainz Album Release Country", mb_data.release_country, "MusicBrainz Album Release Country"),
+                ("TXXX:MusicBrainz Album Release Country",
+                 mb_data.release_country, "MusicBrainz Album Release Country"),
                 ("TXXX:MusicBrainz Release Id", mb_data.release_id, "MusicBrainz Release Id"),
                 ("TXXX:MusicBrainz Release Group Type", mb_data.release_group_type, "MusicBrainz Release Group Type"),
                 ("TXXX:CatalogNumber", mb_data.release_catalog_no, "CatalogNumber"),
@@ -404,13 +415,17 @@ class ID3Tagger(TrackTagger):
                     audio.delall(tag_key)
                     audio.add(TXXX(encoding=3, desc=desc, text=mbs))
 
-            if mb_data.isrcs:
-                audio.delall("TSRC")
-                audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
-
             if mb_data.genres:
                 audio.delall("TXXX:MusicBrainz Genres")
                 audio.add(TXXX(encoding=3, desc="MusicBrainz Genres", text=", ".join(mb_data.genres)))
+
+        # ISRC: deezer → mb_data
+        isrc_val = deezer.isrc if deezer else None
+        if not isrc_val and mb_data and mb_data.isrcs:
+            isrc_val = mb_data.isrcs[0]
+        if isrc_val:
+            audio.delall("TSRC")
+            audio.add(TSRC(encoding=3, text=isrc_val))
 
         # ── Cover-Artwork ──
         if cover_bytes:
