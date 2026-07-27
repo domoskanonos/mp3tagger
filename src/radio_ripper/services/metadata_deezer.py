@@ -6,7 +6,7 @@
 Priority nach Trefferwahrscheinlichkeit:
   - Cover:  95 %+
   - Label:  90 %+  (album.label)
-  - Genre:  95 %   (genre_id → Name, 25 Top-Level-Genres)
+  - Genre:  95 %   (genres.data direkt von Deezer)
   - Album:  95 %+  (album.title)
   - Jahr:   95 %   (release_date)
   - ISRC:   95 %+
@@ -25,35 +25,6 @@ from radio_ripper.infra.http import AsyncHttpClient, download_image_or_none
 _log = logging.getLogger(__name__)
 
 DEEZER_SEARCH_URL = "https://api.deezer.com/search"
-
-# Top-Level-Deezer-Genres (stabil, hartkodiert)
-DEEZER_GENRES: dict[int, str] = {
-    0: "Alle",
-    2: "Afrikanische Musik",
-    16: "Asiatische Musik",
-    75: "Brasilianische Musik",
-    81: "Indische Musik",
-    84: "Country",
-    85: "Alternative",
-    95: "Kids",
-    98: "Klassik",
-    106: "Electro",
-    113: "Dance",
-    116: "Rap/Hip Hop",
-    129: "Jazz",
-    132: "Pop",
-    144: "Reggae",
-    152: "Rock",
-    153: "Blues",
-    165: "R&B",
-    169: "Soul & Funk",
-    173: "Filme/Videospiele",
-    197: "Latin Musik",
-    457: "Hörbücher",
-    459: "Deutsche Musik",
-    464: "Heavy Metal",
-    466: "Folk",
-}
 
 
 @dataclass
@@ -139,11 +110,12 @@ class DeezerMetadataProvider(DeezerProvider):
                 if len(rdate) >= 4:
                     result.year = rdate[:4]
 
-                gid = detail.get("genre_id")
-                if gid is not None:
-                    gname = DEEZER_GENRES.get(int(gid))
+                genres_data = (detail.get("genres") or {}).get("data") or []
+                for g in genres_data:
+                    gname = g.get("name")
                     if gname and gname != "Alle":
                         result.genre = gname
+                        break
 
                 if not result.album and detail.get("title"):
                     result.album = detail.get("title")
