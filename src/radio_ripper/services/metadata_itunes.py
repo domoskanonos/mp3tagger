@@ -67,11 +67,18 @@ class ITunesMetadataProvider(MetadataProvider):
         query = f"{artist} {title}".strip()
         if not query:
             return None
-        hit = await self._search_one(query)
-        if hit is None and title:
-            stripped = _strip_parens(f"{artist} {title}").strip()
-            if stripped and stripped != query:
-                hit = await self._search_one(stripped)
+        countries = ("DE", "US", "GB")
+        hit = None
+        for country in countries:
+            hit = await self._search_one(query, country=country)
+            if hit:
+                break
+            if title:
+                stripped = _strip_parens(f"{artist} {title}").strip()
+                if stripped and stripped != query:
+                    hit = await self._search_one(stripped, country=country)
+                    if hit:
+                        break
         if hit is None:
             return None
         artwork = hit.get("artworkUrl100") or hit.get("artworkUrl60")
@@ -102,12 +109,12 @@ class ITunesMetadataProvider(MetadataProvider):
             itunes_data=itunes_data,
         )
 
-    async def _search_one(self, query: str) -> dict[str, Any] | None:
-        """Einzelne iTunes-Suche; gibt den ersten Treffer zurück oder ``None``."""
+    async def _search_one(self, query: str, country: str = "US") -> dict[str, Any] | None:
+        """Einzelne iTunes-Suche im angegebenen Store-Land; gibt den ersten Treffer zurück oder ``None``."""
         try:
             payload = await self._client.get_json(
                 ITUNES_SEARCH_URL,
-                params={"term": query, "limit": 1, "entity": "song", "media": "music"},
+                params={"term": query, "limit": 1, "entity": "song", "media": "music", "country": country},
                 timeout=self._metadata_timeout,
             )
         except Exception:

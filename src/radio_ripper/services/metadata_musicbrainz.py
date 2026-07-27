@@ -104,6 +104,10 @@ class CoverArtArchiveProvider(CoverArtProvider):
         genres: tuple[str, ...] = ()
         with contextlib.suppress(Exception):
             genres = tuple(g["name"] for g in (payload.get("genres") or []) if g.get("name"))
+            if not genres:
+                tags = [t["name"] for t in (payload.get("tags") or []) if t.get("name")]
+                ignored = {"seen_live", "bootleg", "live", "bootlegs", "live recordings"}
+                genres = tuple(t for t in tags if t not in ignored)
 
         # Frühestes offizielles Release wählen
         official = [r for r in releases if r.get("status") == "Official"]
@@ -127,7 +131,11 @@ class CoverArtArchiveProvider(CoverArtProvider):
                 info = (release_payload.get("label-info") or [])[0]
                 if info:
                     label_name = info.get("label", {}).get("name")
+                    if label_name in ("[no label]",):
+                        label_name = None
                     catalog_no = info.get("catalog-number")
+                    if catalog_no in ("[none]",):
+                        catalog_no = None
 
         rg_type: str | None = None
         if release_payload:
@@ -176,7 +184,7 @@ class CoverArtArchiveProvider(CoverArtProvider):
     async def _fetch_recording_releases(
         self,
         recording_id: str,
-        extra_inc: str = "artists+releases+isrcs+genres",
+        extra_inc: str = "artists+releases+isrcs+genres+tags",
     ) -> list[dict[str, Any]] | None:
         """Ruft das Recording-JSON ab und gibt die Release-Liste zurück.
 
