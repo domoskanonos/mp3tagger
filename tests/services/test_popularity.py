@@ -166,7 +166,7 @@ class TestMaybeDeleteObscure:
         )
         assert result is False
 
-    async def test_get_rank_returns_none_returns_false(self, tmp_path: Path):
+    async def test_get_rank_returns_none_deletes(self, tmp_path: Path):
         provider = AsyncMock(spec=DeezerPopularityChecker)
         provider.get_rank.return_value = None
         fp = tmp_path / "track.mp3"
@@ -179,7 +179,8 @@ class TestMaybeDeleteObscure:
             min_rank=50,
             popularity_provider=provider,
         )
-        assert result is False
+        assert result is True
+        assert not fp.exists()
 
     async def test_rank_above_min_returns_false(self, tmp_path: Path):
         provider = AsyncMock(spec=DeezerPopularityChecker)

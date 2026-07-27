@@ -93,7 +93,8 @@ async def maybe_delete_unpopular(
     popularity_provider: PopularityProvider | None,
     logger: logging.Logger = _LOGGER,
 ) -> bool:
-    """Löscht *file_path*, wenn der Deezer-Rang unter *min_rank* liegt.
+    """Löscht *file_path*, wenn der Deezer-Rang unter *min_rank* liegt
+    oder Deezer den Track nicht kennt (rank=None).
 
     Die Prüfung ist "best effort" — Fehler werden geloggt, nie weitergereicht.
     Gibt ``True`` zurück, wenn die Datei gelöscht wurde.
@@ -105,7 +106,13 @@ async def maybe_delete_unpopular(
 
     rank = await popularity_provider.get_rank(artist, title)
     if rank is None:
-        return False
+        safe_unlink(file_path)
+        logger.warning(
+            "[%s] Deleted unknown track (not on Deezer): %s",
+            station_name,
+            file_path.name,
+        )
+        return True
 
     logger.info(
         "[%s] Popularity rank %s — %s / %s = %d",
