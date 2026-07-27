@@ -24,6 +24,7 @@ import contextlib
 import io
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from typing import Any
 from pathlib import Path
 
 from mutagen.id3 import (
@@ -139,6 +140,16 @@ def _embed_apic(audio: ID3, data: bytes, apic_type: int, desc: str) -> None:
         audio.add(APIC(encoding=3, mime=mime, type=apic_type, desc=desc, data=scaled_data))
 
 
+def _existing_text(audio: ID3, frame_id: str) -> str | None:
+    """Liest den Text eines vorhandenen ID3-Frames; ``None`` wenn nicht existiert."""
+    frame = audio.get(frame_id)
+    if frame is not None:
+        with contextlib.suppress(Exception):
+            text = frame.text[0] if hasattr(frame, "text") else str(frame)
+            return str(text) if text else None
+    return None
+
+
 def _station_name(provenance: str) -> str:
     """Extrahiert den Sendernamen aus der Provenance-Zeichenkette.
 
@@ -247,108 +258,77 @@ class ID3Tagger(TrackTagger):
         artist_image: bytes | None,
         lyrics: str | None,
     ) -> None:
-        """Schreibt alle ID3-Frames in einem Durchgang in das *audio*-Objekt.
+        """Schreibt ID3-Frames mergend in das *audio*-Objekt.
 
-        Ablauf:
-          1. Alle bekannten Frames löschen (saubere Platte)
-          2. Basis-Frames (TPE1, TPE2, TIT2, TALB, TRSN, COMM, TXXX:RIPPEDBY)
-          3. enrichment (TCON, TDRC, TRCK, TPOS, TLEN, TPUB, iTunes-TXXX)
-          4. Fingerprint (TXXX:MusicBrainz Recording Id, TXXX:AcoustID Score,
-             MB-Frames, TSRC)
-          5. Cover-Artwork (APIC:Cover + APIC:Performer)
-          6. Liedtexte (USLT, TXXX:Lyrics)
+        Pro Feld: neuen Wert aus API-Daten nehmen, wenn vorhanden,
+        sonst existierenden Frame im audio-Objekt belassen.
         """
-        # ── 1. Alte Frames löschen ──
-        _alle_frames = (
-            "TPE1",
-            "TPE2",
-            "TIT2",
-            "TALB",
-            "TRSN",
-            "TPUB",
-            "COMM",
-            "TXXX:RIPPEDBY",
-            "TCON",
-            "TDRC",
-            "TRCK",
-            "TPOS",
-            "APIC",
-            "TLEN",
-            "TXXX:ITunesTrackId",
-            "TXXX:ITunesArtistId",
-            "TXXX:ITunesCollectionId",
-            "TXXX:ITunesTrackUrl",
-            "TXXX:ITunesPreviewUrl",
-            "TXXX:ITunesTrackCount",
-            "TXXX:ITunesDiscCount",
-            "TXXX:ITunesCountry",
-            "TXXX:ITunesExplicitness",
-            "TXXX:MusicBrainz Recording Id",
-            "TXXX:AcoustID Score",
-            "TSRC",
-            "TXXX:MusicBrainz Release Id",
-            "TXXX:MusicBrainz Release Group Type",
-            "TXXX:MusicBrainz Genres",
-            "TXXX:MusicBrainz Release Title",
-            "TXXX:MusicBrainz Release Date",
-            "TXXX:MusicBrainz Album Release Country",
-            "TXXX:CatalogNumber",
-            "TXXX:Barcode",
-            "USLT",
-            "TXXX:Lyrics",
-        )
-        for frame in _alle_frames:
-            audio.delall(frame)
 
-        # ── 2. Basis-Frames ──
+        def _set_frame(frame_id: str, factory: Any, new_value: object) -> None:
+            current = audio.get(frame_id)
+            if current is not None:
+                old = str(current)
+            else:
+                old = ""
+            new = str(new_value)
+            if new != old:
+                audio.delall(frame_id)
+                if new:
+                    audio.add(factory(encoding=3, text=new_value))
+
+        # ── Basis-Frames ──
         if track.artist:
-            audio.add(TPE1(encoding=3, text=track.artist))
-            audio.add(TPE2(encoding=3, text=track.artist))
+            _set_frame("TPE1", TPE1, track.artist)
+            _set_frame("TPE2", TPE2, track.artist)
         if track.title:
-            audio.add(TIT2(encoding=3, text=track.title))
+            _set_frame("TIT2", TIT2, track.title)
 
-        # Album: enriched → mb_data → track-Titel als Fallback
+        # Album: enriched → mb_data → track-Titel als Fallback → vorhanden
         album = enriched.album
         if not album and mb_data and mb_data.release_title:
             album = mb_data.release_title
         if not album:
             album = track.title or track.stream_title
         if album:
-            audio.add(TALB(encoding=3, text=album))
+            _set_frame("TALB", TALB, album)
 
         # Jahr: enriched → mb_data.release_date
         year = enriched.year
         if not year and mb_data and mb_data.release_date:
             year = mb_data.release_date[:4]
         if year:
-            audio.add(TDRC(encoding=3, text=year))
+            _set_frame("TDRC", TDRC, year)
 
-        # Genre: enriched → mb_data.genres
+        # Genre: enriched → mb_data.genres → vorhanden (nicht überschreiben)
         genre = enriched.genre
         if not genre and mb_data and mb_data.genres:
             genre = ", ".join(mb_data.genres)
+        if not genre:
+            genre = _existing_text(audio, "TCON")
         if genre:
-            audio.add(TCON(encoding=3, text=genre))
+            _set_frame("TCON", TCON, genre)
 
-        audio.add(TRSN(encoding=3, text=_station_name(provenance)))
+        _set_frame("TRSN", TRSN, _station_name(provenance))
 
-        # Label: mb_data.release_label → enriched.label (MB-Daten haben Vorrang)
+        # Label: mb_data.release_label → enriched.label → vorhanden (nie [no label])
         label = None
         if mb_data and mb_data.release_label:
             label = mb_data.release_label
         elif enriched.label:
             label = enriched.label
-        if label:
-            audio.add(TPUB(encoding=3, text=label))
+        if not label or label in ("[no label]", "[none]"):
+            label = _existing_text(audio, "TPUB")
+        if label and label not in ("[no label]", "[none]"):
+            _set_frame("TPUB", TPUB, label)
 
         # Track-/Disc-Nummer
         if enriched.track_number is not None:
             trck = str(enriched.track_number)
             if enriched.disc_number is not None:
                 trck = f"{enriched.disc_number}/{trck}"
-            audio.add(TRCK(encoding=3, text=trck))
+            _set_frame("TRCK", TRCK, trck)
         if enriched.disc_number is not None:
-            audio.add(TPOS(encoding=3, text=str(enriched.disc_number)))
+            _set_frame("TPOS", TPOS, str(enriched.disc_number))
 
         # Titel-Länge: mb_data.length_ms → enriched.track_length (MB hat Vorrang)
         length = None
@@ -357,67 +337,92 @@ class ID3Tagger(TrackTagger):
         elif enriched.track_length is not None:
             length = enriched.track_length
         if length is not None:
-            audio.add(TLEN(encoding=3, text=str(length)))
+            _set_frame("TLEN", TLEN, str(length))
 
+        audio.delall("COMM")
         audio.add(COMM(encoding=3, lang="eng", desc="", text="Recorded via radiostream"))
+        audio.delall("TXXX:RIPPEDBY")
         audio.add(TXXX(encoding=3, desc="RIPPEDBY", text=provenance))
 
-        # ── 3. iTunes-Metadaten ──
+        # ── iTunes-Metadaten ──
         it = enriched.itunes_data
         if it:
-            if it.track_id is not None:
-                audio.add(TXXX(encoding=3, desc="ITunesTrackId", text=str(it.track_id)))
-            if it.artist_id is not None:
-                audio.add(TXXX(encoding=3, desc="ITunesArtistId", text=str(it.artist_id)))
-            if it.collection_id is not None:
-                audio.add(TXXX(encoding=3, desc="ITunesCollectionId", text=str(it.collection_id)))
-            if it.track_view_url:
-                audio.add(TXXX(encoding=3, desc="ITunesTrackUrl", text=it.track_view_url))
-            if it.preview_url:
-                audio.add(TXXX(encoding=3, desc="ITunesPreviewUrl", text=it.preview_url))
-            if it.track_count is not None:
-                audio.add(TXXX(encoding=3, desc="ITunesTrackCount", text=str(it.track_count)))
-            if it.disc_count is not None:
-                audio.add(TXXX(encoding=3, desc="ITunesDiscCount", text=str(it.disc_count)))
+            iid: int | None
+            for tag_key, iid, desc in (
+                ("TXXX:ITunesTrackId", it.track_id, "ITunesTrackId"),
+                ("TXXX:ITunesArtistId", it.artist_id, "ITunesArtistId"),
+                ("TXXX:ITunesCollectionId", it.collection_id, "ITunesCollectionId"),
+            ):
+                if iid is not None:
+                    audio.delall(tag_key)
+                    audio.add(TXXX(encoding=3, desc=desc, text=str(iid)))
+
+            surl: str | None
+            for tag_key, surl, desc in (
+                ("TXXX:ITunesTrackUrl", it.track_view_url, "ITunesTrackUrl"),
+                ("TXXX:ITunesPreviewUrl", it.preview_url, "ITunesPreviewUrl"),
+            ):
+                if surl:
+                    audio.delall(tag_key)
+                    audio.add(TXXX(encoding=3, desc=desc, text=surl))
+
+            icount: int | None
+            for tag_key, icount, desc in (
+                ("TXXX:ITunesTrackCount", it.track_count, "ITunesTrackCount"),
+                ("TXXX:ITunesDiscCount", it.disc_count, "ITunesDiscCount"),
+            ):
+                if icount is not None:
+                    audio.delall(tag_key)
+                    audio.add(TXXX(encoding=3, desc=desc, text=str(icount)))
+
             if it.country:
+                audio.delall("TXXX:ITunesCountry")
                 audio.add(TXXX(encoding=3, desc="ITunesCountry", text=it.country))
             if it.explicitness:
+                audio.delall("TXXX:ITunesExplicitness")
                 audio.add(TXXX(encoding=3, desc="ITunesExplicitness", text=it.explicitness))
 
-        # ── 4. Fingerprint ──
+        # ── Fingerprint ──
         if recording_id:
+            audio.delall("TXXX:MusicBrainz Recording Id")
             audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=recording_id))
+        audio.delall("TXXX:AcoustID Score")
         audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
 
         if mb_data is not None:
-            if mb_data.release_title:
-                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Title", text=mb_data.release_title))
-            if mb_data.release_date:
-                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Date", text=mb_data.release_date))
-            if mb_data.release_country:
-                audio.add(TXXX(encoding=3, desc="MusicBrainz Album Release Country", text=mb_data.release_country))
-            if mb_data.isrcs:
-                audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
-            if mb_data.release_id:
-                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Id", text=mb_data.release_id))
-            if mb_data.release_group_type:
-                audio.add(TXXX(encoding=3, desc="MusicBrainz Release Group Type", text=mb_data.release_group_type))
-            if mb_data.genres:
-                audio.add(TXXX(encoding=3, desc="MusicBrainz Genres", text=", ".join(mb_data.genres)))
-            if mb_data.release_catalog_no:
-                audio.add(TXXX(encoding=3, desc="CatalogNumber", text=mb_data.release_catalog_no))
-            if mb_data.barcode:
-                audio.add(TXXX(encoding=3, desc="Barcode", text=mb_data.barcode))
+            mbs: str | None
+            for tag_key, mbs, desc in (
+                ("TXXX:MusicBrainz Release Title", mb_data.release_title, "MusicBrainz Release Title"),
+                ("TXXX:MusicBrainz Release Date", mb_data.release_date, "MusicBrainz Release Date"),
+                ("TXXX:MusicBrainz Album Release Country", mb_data.release_country, "MusicBrainz Album Release Country"),
+                ("TXXX:MusicBrainz Release Id", mb_data.release_id, "MusicBrainz Release Id"),
+                ("TXXX:MusicBrainz Release Group Type", mb_data.release_group_type, "MusicBrainz Release Group Type"),
+                ("TXXX:CatalogNumber", mb_data.release_catalog_no, "CatalogNumber"),
+                ("TXXX:Barcode", mb_data.barcode, "Barcode"),
+            ):
+                if mbs:
+                    audio.delall(tag_key)
+                    audio.add(TXXX(encoding=3, desc=desc, text=mbs))
 
-        # ── 5. Cover-Artwork ──
+            if mb_data.isrcs:
+                audio.delall("TSRC")
+                audio.add(TSRC(encoding=3, text=mb_data.isrcs[0]))
+
+            if mb_data.genres:
+                audio.delall("TXXX:MusicBrainz Genres")
+                audio.add(TXXX(encoding=3, desc="MusicBrainz Genres", text=", ".join(mb_data.genres)))
+
+        # ── Cover-Artwork ──
         if cover_bytes:
             _embed_apic(audio, cover_bytes, 3, "Cover")
         if artist_image is not None:
             _embed_apic(audio, artist_image, 8, "Performer")
 
-        # ── 6. Liedtexte ──
+        # ── Liedtexte ──
         if lyrics:
+            audio.delall("USLT")
             audio.add(USLT(encoding=1, lang="eng", desc="", text=lyrics))
+            audio.delall("TXXX:Lyrics")
             audio.add(TXXX(encoding=1, desc="Lyrics", text=lyrics))
 
 
