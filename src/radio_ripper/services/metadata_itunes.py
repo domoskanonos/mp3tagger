@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from radio_ripper.domain.models import EnrichedInfo, ITunesTrackData
-from radio_ripper.infra.http import AsyncHttpClient
+from radio_ripper.infra.http import AsyncHttpClient, download_image_or_none
 from radio_ripper.infra.resilience import retry_async
 
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
@@ -30,17 +30,6 @@ def _strip_parens(text: str) -> str:
     """
     cleaned = _PARENS_RE.sub("", text)
     return re.sub(r"\s+", " ", cleaned)
-
-
-async def _fetch_image(client: AsyncHttpClient, url: str, timeout: float) -> bytes | None:
-    """Lädt ein Bild von einer URL herunter, gibt ``None`` bei Fehler oder zu kleinen Daten."""
-    try:
-        data = await client.get_bytes(url, timeout=timeout)
-    except Exception:
-        return None
-    if not data or len(data) < 64:
-        return None
-    return data
 
 
 class MetadataProvider(ABC):
@@ -127,7 +116,7 @@ class ITunesMetadataProvider(MetadataProvider):
         return results[0] if results else None
 
     async def download_image(self, url: str) -> bytes | None:
-        return await _fetch_image(self._client, url, self._cover_timeout)
+        return await download_image_or_none(self._client, url, timeout=self._cover_timeout)
 
     @staticmethod
     def _upgrade_artwork(url: str) -> str:

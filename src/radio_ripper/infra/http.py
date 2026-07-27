@@ -110,4 +110,20 @@ class HttpxAsyncClient(AsyncHttpClient):
         await self.aclose()
 
 
-__all__ = ["AsyncHttpClient", "HttpxAsyncClient"]
+async def download_image_or_none(client: AsyncHttpClient, url: str, *, timeout: float | None = None) -> bytes | None:
+    """Lädt ein Bild von *url* herunter; ``None`` bei Fehler oder zu kleinen Daten (<64 Bytes).
+
+    Zentrale Hilfsfunktion für alle Provider (iTunes, CAA, Deezer), die
+    Cover-/Künstlerbilder abrufen — vermeidet Duplikation derselben
+    Try/Except-Länge in mehreren Modulen.
+    """
+    try:
+        data = await client.get_bytes(url, timeout=timeout)
+    except Exception:
+        return None
+    if not data or len(data) < 64:
+        return None
+    return data
+
+
+__all__ = ["AsyncHttpClient", "HttpxAsyncClient", "download_image_or_none"]

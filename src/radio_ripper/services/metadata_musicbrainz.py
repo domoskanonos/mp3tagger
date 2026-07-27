@@ -16,19 +16,8 @@ from typing import Any
 import httpx
 
 from radio_ripper.domain.models import MusicBrainzData
-from radio_ripper.infra.http import AsyncHttpClient
+from radio_ripper.infra.http import AsyncHttpClient, download_image_or_none
 from radio_ripper.infra.resilience import retry_async
-
-
-async def _fetch_image(client: AsyncHttpClient, url: str, timeout: float) -> bytes | None:
-    """Lädt ein Bild von einer URL herunter, gibt ``None`` bei Fehler oder zu kleinen Daten."""
-    try:
-        data = await client.get_bytes(url, timeout=timeout)
-    except Exception:
-        return None
-    if not data or len(data) < 64:
-        return None
-    return data
 
 
 class CoverArtProvider(ABC):
@@ -205,7 +194,7 @@ class CoverArtArchiveProvider(CoverArtProvider):
         return ((payload or {}).get("releases") or []) or None
 
     async def download_image(self, url: str) -> bytes | None:
-        return await _fetch_image(self._client, url, self._timeout)
+        return await download_image_or_none(self._client, url, timeout=self._timeout)
 
 
 __all__ = [
