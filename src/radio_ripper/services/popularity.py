@@ -1,6 +1,6 @@
 """Popularitäts-Prüfung über die öffentliche Deezer-API.
 
-Löscht Tracks, die einen Mindest-Popularitätsrang unterschreiten.
+Liefert Track-Rang (für Popularitäts-Filter im Processor) und Künstler-Bilder.
 Kein API-Key nötig — Deezer's Such-Endpunkt ist öffentlich.
 """
 
@@ -8,16 +8,13 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 import httpx
 
 from radio_ripper.infra.http import AsyncHttpClient
 from radio_ripper.infra.resilience import retry_async
-from radio_ripper.services.file_utils import safe_unlink
 
-_LOGGER = logging.getLogger("radio_ripper.popularity")
-_DELAY = 0.2
+_LOGGER = logging.getLogger(__name__)
 
 
 class PopularityProvider(ABC):
@@ -83,63 +80,7 @@ class DeezerPopularityChecker(PopularityProvider):
             return None
 
 
-async def maybe_delete_unpopular(
-    *,
-    file_path: Path,
-    station_name: str,
-    artist: str,
-    title: str,
-    min_rank: int,
-    popularity_provider: PopularityProvider | None,
-    logger: logging.Logger = _LOGGER,
-) -> bool:
-    """Löscht *file_path*, wenn der Deezer-Rang unter *min_rank* liegt
-    oder Deezer den Track nicht kennt (rank=None).
-
-    Die Prüfung ist "best effort" — Fehler werden geloggt, nie weitergereicht.
-    Gibt ``True`` zurück, wenn die Datei gelöscht wurde.
-    """
-    if min_rank <= 0 or popularity_provider is None:
-        return False
-    if not artist and not title:
-        return False
-
-    rank = await popularity_provider.get_rank(artist, title)
-    if rank is None:
-        safe_unlink(file_path)
-        logger.warning(
-            "[%s] Deleted unknown track (not on Deezer): %s",
-            station_name,
-            file_path.name,
-        )
-        return True
-
-    logger.info(
-        "[%s] Popularity rank %s — %s / %s = %d",
-        station_name,
-        "DELETED" if rank < min_rank else "OK",
-        artist,
-        title,
-        rank,
-    )
-
-    if rank >= min_rank:
-        return False
-
-    safe_unlink(file_path)
-
-    logger.warning(
-        "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
-        station_name,
-        rank,
-        min_rank,
-        file_path.name,
-    )
-    return True
-
-
 __all__ = [
     "DeezerPopularityChecker",
     "PopularityProvider",
-    "maybe_delete_unpopular",
 ]

@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
-import pytest
-
 from radio_ripper.infra.http import AsyncHttpClient
-from radio_ripper.services.popularity import DeezerPopularityChecker, maybe_delete_unpopular
+from radio_ripper.services.popularity import DeezerPopularityChecker
 
 
 class _FakeClient(AsyncHttpClient):
@@ -110,126 +107,3 @@ class TestDeezerPopularityChecker:
         checker = DeezerPopularityChecker(client)
         result = await checker.fetch_artist_image("Dr. Dre")
         assert result is None
-
-
-class TestMaybeDeleteObscure:
-    async def test_min_rank_zero_returns_false(self, tmp_path: Path):
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="A",
-            title="B",
-            min_rank=0,
-            popularity_provider=AsyncMock(),
-        )
-        assert result is False
-        assert fp.exists()
-
-    async def test_min_rank_negative_returns_false(self, tmp_path: Path):
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="A",
-            title="B",
-            min_rank=-1,
-            popularity_provider=AsyncMock(),
-        )
-        assert result is False
-
-    async def test_no_provider_returns_false(self, tmp_path: Path):
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="A",
-            title="B",
-            min_rank=50,
-            popularity_provider=None,
-        )
-        assert result is False
-
-    async def test_no_artist_and_no_title_returns_false(self, tmp_path: Path):
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="",
-            title="",
-            min_rank=50,
-            popularity_provider=AsyncMock(),
-        )
-        assert result is False
-
-    async def test_get_rank_returns_none_deletes(self, tmp_path: Path):
-        provider = AsyncMock(spec=DeezerPopularityChecker)
-        provider.get_rank.return_value = None
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="A",
-            title="B",
-            min_rank=50,
-            popularity_provider=provider,
-        )
-        assert result is True
-        assert not fp.exists()
-
-    async def test_rank_above_min_returns_false(self, tmp_path: Path):
-        provider = AsyncMock(spec=DeezerPopularityChecker)
-        provider.get_rank.return_value = 100
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="A",
-            title="B",
-            min_rank=50,
-            popularity_provider=provider,
-        )
-        assert result is False
-
-    async def test_rank_below_min_deletes_and_returns_true(self, tmp_path: Path):
-        provider = AsyncMock(spec=DeezerPopularityChecker)
-        provider.get_rank.return_value = 10
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="A",
-            title="B",
-            min_rank=50,
-            popularity_provider=provider,
-        )
-        assert result is True
-        assert not fp.exists()
-
-    async def test_unlink_oserror_suppressed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        provider = AsyncMock(spec=DeezerPopularityChecker)
-        provider.get_rank.return_value = 10
-        fp = tmp_path / "track.mp3"
-        fp.write_bytes(b"data")
-
-        def _fail_unlink(*a: object, **kw: object) -> None:
-            raise OSError("permission denied")
-
-        monkeypatch.setattr(Path, "unlink", _fail_unlink)
-
-        result = await maybe_delete_unpopular(
-            file_path=fp,
-            station_name="Test",
-            artist="A",
-            title="B",
-            min_rank=50,
-            popularity_provider=provider,
-        )
-        assert result is True
