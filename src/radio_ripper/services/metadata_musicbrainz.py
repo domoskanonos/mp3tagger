@@ -131,10 +131,10 @@ class CoverArtArchiveProvider(CoverArtProvider):
                 info = (release_payload.get("label-info") or [])[0]
                 if info:
                     label_name = info.get("label", {}).get("name")
-                    if label_name in ("[no label]",):
+                    if label_name and label_name.startswith("["):
                         label_name = None
                     catalog_no = info.get("catalog-number")
-                    if catalog_no in ("[none]",):
+                    if catalog_no and catalog_no.startswith("["):
                         catalog_no = None
 
         rg_type: str | None = None

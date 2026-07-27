@@ -151,6 +151,13 @@ def _existing_text(audio: ID3, frame_id: str) -> str | None:
     return None
 
 
+def _is_placeholder(value: str | None) -> bool:
+    if value is None:
+        return True
+    stripped = value.strip()
+    return stripped.startswith("[") and stripped.endswith("]")
+
+
 def _station_name(provenance: str) -> str:
     """Extrahiert den Sendernamen aus der Provenance-Zeichenkette.
 
@@ -305,28 +312,40 @@ class ID3Tagger(TrackTagger):
         if year:
             _set_frame("TDRC", TDRC, year)
 
-        # Genre: deezer → enriched → mb_data → vorhanden
+        # Genre: deezer → enriched → mb_data → vorhanden (nie [...])
         genre = deezer.genre if deezer else None
+        if _is_placeholder(genre):
+            genre = None
         if not genre:
             genre = enriched.genre
+        if _is_placeholder(genre):
+            genre = None
         if not genre and mb_data and mb_data.genres:
             genre = ", ".join(mb_data.genres)
+        if _is_placeholder(genre):
+            genre = None
         if not genre:
             genre = _existing_text(audio, "TCON")
-        if genre:
+        if genre and not _is_placeholder(genre):
             _set_frame("TCON", TCON, genre)
 
         _set_frame("TRSN", TRSN, _station_name(provenance))
 
-        # Label: deezer → mb_data → enriched → vorhanden (nie [no label])
+        # Label: deezer → mb_data → enriched → vorhanden (nie [...])
         label = deezer.label if deezer else None
-        if not label or label in ("[no label]", "[none]"):
+        if _is_placeholder(label):
+            label = None
+        if not label:
             label = mb_data.release_label if mb_data else None
-        if not label or label in ("[no label]", "[none]"):
+        if _is_placeholder(label):
+            label = None
+        if not label:
             label = enriched.label
-        if not label or label in ("[no label]", "[none]"):
+        if _is_placeholder(label):
+            label = None
+        if not label:
             label = _existing_text(audio, "TPUB")
-        if label and label not in ("[no label]", "[none]"):
+        if label and not _is_placeholder(label):
             _set_frame("TPUB", TPUB, label)
 
         # Track-/Disc-Nummer
