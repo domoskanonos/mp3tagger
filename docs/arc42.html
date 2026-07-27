@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="de" xml:lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>radio-ripper-tag — arc42-Dokumentation</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">radio-ripper-tag — arc42-Dokumentation</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#radio-ripper-tag-arc42-dokumentation"
+id="toc-radio-ripper-tag-arc42-dokumentation">radio-ripper-tag –
+Arc42-Dokumentation</a>
+<ul>
+<li><a href="#projektübersicht"
+id="toc-projektübersicht">Projektübersicht</a></li>
+<li><a href="#einführung-und-ziele" id="toc-einführung-und-ziele">1.
+Einführung und Ziele</a></li>
+<li><a href="#randbedingungen" id="toc-randbedingungen">2.
+Randbedingungen</a></li>
+<li><a href="#kontextabgrenzung" id="toc-kontextabgrenzung">3.
+Kontextabgrenzung</a></li>
+<li><a href="#lösungsstrategie" id="toc-lösungsstrategie">4.
+Lösungsstrategie</a></li>
+<li><a href="#bausteinsicht" id="toc-bausteinsicht">5.
+Bausteinsicht</a></li>
+<li><a href="#laufzeitsicht" id="toc-laufzeitsicht">6.
+Laufzeitsicht</a></li>
+<li><a href="#verteilungssicht" id="toc-verteilungssicht">7.
+Verteilungssicht</a></li>
+<li><a href="#architekturentscheidungen"
+id="toc-architekturentscheidungen">8. Architekturentscheidungen</a></li>
+<li><a href="#qualitätsanforderungen" id="toc-qualitätsanforderungen">9.
+Qualitätsanforderungen</a></li>
+<li><a href="#technische-risiken" id="toc-technische-risiken">10.
+Technische Risiken</a></li>
+<li><a href="#glossar" id="toc-glossar">11. Glossar</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="radio-ripper-tag-arc42-dokumentation">radio-ripper-tag –
+Arc42-Dokumentation</h1>
+<h2 id="projektübersicht">Projektübersicht</h2>
+<table>
+<colgroup>
+<col style="width: 62%" />
+<col style="width: 37%" />
+</colgroup>
+<thead>
+<tr>
+<th>Attribut</th>
+<th>Wert</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Name</td>
+<td>radio-ripper-tag</td>
+</tr>
+<tr>
+<td>Version</td>
+<td>2.1.0</td>
+</tr>
+<tr>
+<td>Beschreibung</td>
+<td>Webradio-Tagger — AcoustID-Fingerprinting, iTunes-Enrichment,
+ID3v2-Tagging</td>
+</tr>
+<tr>
+<td>Sprache</td>
+<td>Python ≥3.11</td>
+</tr>
+<tr>
+<td>Lizenz</td>
+<td>MIT</td>
+</tr>
+</tbody>
+</table>
+<h2 id="einführung-und-ziele">1. Einführung und Ziele</h2>
+<p><strong>Hauptziel:</strong> Automatische Identifikation und
+Metadaten-Anreicherung von Webradio-Mitschnitten.</p>
+<p><strong>Qualitätsziele:</strong> - Korrekte ID3v2-Tagging auch bei
+unvollständigen Metadaten - Robuster Betrieb (Resilienz gegen
+API-Fehlschläge, Netzwerkausfälle) - Austauschbare externe Provider
+(Ports-and-Adapters)</p>
+<h2 id="randbedingungen">2. Randbedingungen</h2>
+<ul>
+<li>Linux als Zielplattform (Docker-Container)</li>
+<li>Externe APIs: AcoustID, iTunes, MusicBrainz, CAA, Deezer,
+LRCLib</li>
+<li><strong>Keine Persistenz</strong> — Files-only: perfekt =
+<code>destination/</code>, Fehler = gelöscht</li>
+<li>System-Chromaprint für Audio-Fingerprinting</li>
+</ul>
+<h2 id="kontextabgrenzung">3. Kontextabgrenzung</h2>
+<figure>
+<img src="diagrams/context.puml" alt="Systemkontext" />
+<figcaption aria-hidden="true">Systemkontext</figcaption>
+</figure>
+<p><strong>Fachlicher Kontext:</strong> Der Tagger verarbeitet
+MP3-Dateien aus einem Inbox-Verzeichnis, reichert sie mit Metadaten an
+und verschiebt sie in ein Zielverzeichnis.</p>
+<h2 id="lösungsstrategie">4. Lösungsstrategie</h2>
+<ul>
+<li><strong>Hexagonale Architektur:</strong> Domain-Modelle
+(dataclasses) sind frei von Infrastruktur-Code</li>
+<li><strong>ABCs als Ports:</strong> <code>FingerprintProvider</code>,
+<code>MetadataProvider</code>, <code>CoverArtProvider</code>,
+<code>PopularityProvider</code>, <code>LyricsProvider</code>,
+<code>TrackTagger</code>, <code>AsyncHttpClient</code></li>
+<li><strong>Asynchron:</strong> Vollständig async/await mit asyncio,
+<code>asyncio.gather</code> für parallele API-Calls</li>
+<li><strong>Ein-Tag-Write-Prinzip:</strong> Alle ID3-Frames in einem
+einzigen <code>write_all</code>-Durchgang (atomic via
+<code>ID3.save</code>)</li>
+<li><strong>Pipeline:</strong> Fingerprint → CAA+MB parallel →
+MB-Korrektur → iTunes+Lyrics+ArtistImage parallel → Score-Dedup →
+Popularität → Tag → atomic Move</li>
+</ul>
+<h2 id="bausteinsicht">5. Bausteinsicht</h2>
+<figure>
+<img src="diagrams/building_blocks.puml" alt="Bausteinsicht" />
+<figcaption aria-hidden="true">Bausteinsicht</figcaption>
+</figure>
+<h3 id="ebene-1-schichten">Ebene 1 – Schichten</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 33%" />
+<col style="width: 41%" />
+</colgroup>
+<thead>
+<tr>
+<th>Schicht</th>
+<th>Verzeichnis</th>
+<th>Zuständigkeit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CLI</td>
+<td><code>cli.py</code></td>
+<td>Argument-Parsing, DI-Wiring, Signal-Handling,
+<code>_run_pipeline</code></td>
+</tr>
+<tr>
+<td>Services</td>
+<td><code>services/</code></td>
+<td>Geschäftslogik, Provider-ABCs, Pipeline</td>
+</tr>
+<tr>
+<td>Domain</td>
+<td><code>domain/</code></td>
+<td>Wertobjekte (frozen dataclasses)</td>
+</tr>
+<tr>
+<td>Infrastructure</td>
+<td><code>infra/</code></td>
+<td>HTTP-Client, Config, Logging, Resilience</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ebene-2-module">Ebene 2 – Module</h3>
+<table>
+<colgroup>
+<col style="width: 31%" />
+<col style="width: 68%" />
+</colgroup>
+<thead>
+<tr>
+<th>Modul</th>
+<th>Verantwortung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cli.py</code></td>
+<td>Arg-Parser, DI-Wiring, Signal-Handling,
+<code>_run_pipeline</code></td>
+</tr>
+<tr>
+<td><code>services/processor.py</code></td>
+<td>FileProcessor: Inbox-Polling + 8-Phasen-Pipeline</td>
+</tr>
+<tr>
+<td><code>services/fingerprint.py</code></td>
+<td>AcoustID via pyacoustid (Chromaprint)</td>
+</tr>
+<tr>
+<td><code>services/metadata_itunes.py</code></td>
+<td>iTunes Search API-Provider</td>
+</tr>
+<tr>
+<td><code>services/metadata_musicbrainz.py</code></td>
+<td>MusicBrainz + Cover Art Archive</td>
+</tr>
+<tr>
+<td><code>services/lyrics.py</code></td>
+<td>LRCLib-API-Provider</td>
+</tr>
+<tr>
+<td><code>services/popularity.py</code></td>
+<td>Deezer-Ranking + <code>maybe_delete_unpopular</code></td>
+</tr>
+<tr>
+<td><code>services/tagging.py</code></td>
+<td>ID3v2-Tag-Writer (mutagen), <code>read_acoustid_score</code>,
+<code>_scale_cover</code></td>
+</tr>
+<tr>
+<td><code>services/file_utils.py</code></td>
+<td><code>sanitize_filename</code>, <code>compute_file_path</code>,
+<code>safe_unlink</code></td>
+</tr>
+<tr>
+<td><code>domain/models.py</code></td>
+<td><code>TrackInfo</code>, <code>EnrichedInfo</code>,
+<code>MusicBrainzData</code>, <code>FingerprintResult</code>,
+<code>ITunesTrackData</code></td>
+</tr>
+<tr>
+<td><code>infra/http.py</code></td>
+<td><code>AsyncHttpClient</code> ABC + <code>HttpxAsyncClient</code> +
+<code>download_image_or_none</code></td>
+</tr>
+<tr>
+<td><code>infra/config.py</code></td>
+<td>Pydantic <code>Settings</code> + <code>load_settings</code></td>
+</tr>
+<tr>
+<td><code>infra/errors.py</code></td>
+<td><code>RadioRipperError</code> → <code>ConfigurationError</code> /
+<code>TaggingError</code></td>
+</tr>
+<tr>
+<td><code>infra/logging.py</code></td>
+<td><code>configure_logging</code> (Console + RotatingFile)</td>
+</tr>
+<tr>
+<td><code>infra/resilience.py</code></td>
+<td><code>retry_async</code> Decorator (exponential backoff)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="laufzeitsicht">6. Laufzeitsicht</h2>
+<figure>
+<img src="diagrams/runtime_flow.puml" alt="Runtime Flow" />
+<figcaption aria-hidden="true">Runtime Flow</figcaption>
+</figure>
+<p><strong>Hauptprozess — FileProcessor._process_file (8
+Phasen):</strong> 1. <code>mp3_inbox/*.mp3</code> →
+<code>.processing</code>-Rename (Lock-Mechanismus) 2. Verschieben ins
+<code>work_dir</code> 3. AcoustID-Fingerprinting → bei
+<code>NonRetriableFingerprintError</code>: löschen; bei
+<code>FingerprintError</code>: nach <code>failed/</code> verschieben;
+bei Score &lt; min: löschen 4. <strong>Phase 1 — CAA + MB
+parallel:</strong>
+<code>asyncio.gather(fetch_cover, fetch_recording_data, fetch_artist_image)</code>
+— MB ist kanonisch 5. <strong>Phase 2 — MB-Korrektur:</strong>
+<code>correct_fingerprint_result</code> überschreibt
+AcoustID-Artist/Title mit MB-Daten 6. <strong>Phase 3 — iTunes + Lyrics
++ ArtistImage parallel:</strong> <code>asyncio.gather</code> über alle
+drei Provider 7. <strong>Phase 4 — Score-Dedup:</strong> Vergleicht
+Score mit bestehender Datei in <code>destination/</code> 8.
+<strong>Phase 5-8:</strong> <code>.untested</code>-Suffix entfernen →
+Popularitäts-Prüfung → einmaliger <code>tagger.write_all</code> →
+atomarer Move zu <code>destination/</code></p>
+<h2 id="verteilungssicht">7. Verteilungssicht</h2>
+<p><strong>Docker-Deployment (Multi-Stage-Build):</strong> -
+Builder-Stage mit <code>uv</code> (Python 3.12-slim) installiert
+Dependencies - Runtime-Stage mit <code>python:3.12-slim</code> + ffmpeg
++ chromaprint - Container läuft als unprivilegierter Benutzer
+<code>ripper</code> - Volumes: <code>config:ro</code>,
+<code>work</code>, <code>recordings</code> - Healthcheck via
+<code>pgrep -f 'radio-ripper'</code> - Graceful Shutdown via SIGTERM
+(<code>stop_grace_period: 30s</code>)</p>
+<h2 id="architekturentscheidungen">8. Architekturentscheidungen</h2>
+<table>
+<colgroup>
+<col style="width: 52%" />
+<col style="width: 48%" />
+</colgroup>
+<thead>
+<tr>
+<th>Entscheidung</th>
+<th>Begründung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ABCs statt Protocols</td>
+<td>Explizite Vererbungshierarchie, einfachere Tool-Unterstützung</td>
+</tr>
+<tr>
+<td>httpx statt aiohttp</td>
+<td>Saubere Async-API, integrierter Connection-Pool</td>
+</tr>
+<tr>
+<td>Pydantic v2 für Config</td>
+<td>Automatische Validierung, Aliase, Feld-Constraints</td>
+</tr>
+<tr>
+<td>Mutagen für ID3v2</td>
+<td>De-facto-Standard für Python-MP3-Tagging</td>
+</tr>
+<tr>
+<td><strong>Keine Persistenz</strong> — Files-only</td>
+<td>Single-User, kein State nötig; perfekt = <code>destination/</code>,
+sonst gelöscht</td>
+</tr>
+<tr>
+<td><strong>LRCLib statt lyrics.ovh</strong></td>
+<td>Kein API-Key nötig, <code>plainLyrics</code> +
+<code>instrumental</code>-Flag, Free-Fallback
+<code>/api/search</code></td>
+</tr>
+<tr>
+<td><strong>Ein Tag-Schreib-Durchgang</strong></td>
+<td>Einzige öffentliche Methode <code>write_all</code>, atomic via
+<code>ID3.save</code></td>
+</tr>
+<tr>
+<td>asyncio + <code>asyncio.gather</code></td>
+<td>Parallele API-Calls (iTunes + CAA + Deezer + LRCLib)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="qualitätsanforderungen">9. Qualitätsanforderungen</h2>
+<ul>
+<li><strong>Testabdeckung:</strong> ≥80% (Statement-Coverage); 175 Tests
+über <code>pytest --cov</code></li>
+<li><strong>Linting:</strong> ruff (E, F, W, I, N, UP, B, SIM, ARG, RUF)
+— ersetzt flake8 + isort</li>
+<li><strong>Typisierung:</strong> mypy (relevante Regeln) auf
+<code>src/</code> + <code>tests/</code>; Pylance/<code>pyright</code>
+für IDE</li>
+<li><strong>CI:</strong> Lint → TypeCheck → Test (Python 3.11-3.13) →
+Docker-Build (main/master)</li>
+<li><strong>Pre-Commit:</strong> ruff + ruff-format + mypy +
+Standard-Hooks</li>
+<li><strong>Resilienz:</strong> <code>retry_async</code>-Decorator für
+HTTP-APIs, graceful shutdown via <code>asyncio.Event</code></li>
+</ul>
+<h2 id="technische-risiken">10. Technische Risiken</h2>
+<table>
+<colgroup>
+<col style="width: 34%" />
+<col style="width: 65%" />
+</colgroup>
+<thead>
+<tr>
+<th>Risiko</th>
+<th>Gegenmaßnahme</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ausfall AcoustID-API</td>
+<td><code>FingerprintError</code> → Datei nach <code>failed/</code>
+verschoben (Retry bei Neustart)</td>
+</tr>
+<tr>
+<td>Rate-Limit MusicBrainz</td>
+<td>1 req/s manuell via <code>_rate_limited_json</code> +
+<code>retry_async</code></td>
+</tr>
+<tr>
+<td>Korrupte MP3-Dateien</td>
+<td><code>NonRetriableFingerprintError</code> → sofortige Löschung</td>
+</tr>
+<tr>
+<td>Race-Conditions Dateisystem</td>
+<td><code>.processing</code>-Rename als Lock; sequentielle Verarbeitung
+pro Inbox</td>
+</tr>
+<tr>
+<td>Artist/Title vertauscht (AcoustID)</td>
+<td><code>correct_fingerprint_result</code> überschreibt mit MusicBrainz
+(kanonisch)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="glossar">11. Glossar</h2>
+<table>
+<thead>
+<tr>
+<th>Begriff</th>
+<th>Bedeutung</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AcoustID</td>
+<td>Audio-Fingerprint-Datenbank (Chromaprint)</td>
+</tr>
+<tr>
+<td>CAA</td>
+<td>Cover Art Archive (MusicBrainz-Projekt)</td>
+</tr>
+<tr>
+<td>MBID</td>
+<td>MusicBrainz Identifier (UUID für Recording/Release)</td>
+</tr>
+<tr>
+<td>ICY</td>
+<td>Internet-Stream-Protokoll (SHOUTcast/Icecast)</td>
+</tr>
+<tr>
+<td>MusicBrainz</td>
+<td>Offene Musik-Enzyklopädie</td>
+</tr>
+<tr>
+<td>LRCLib</td>
+<td>Freie Songtext-API (lrclib.net)</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

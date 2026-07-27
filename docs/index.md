@@ -22,8 +22,8 @@
 ## 2. Randbedingungen
 
 - Linux als Zielplattform (Docker-Container)
-- Externe APIs: AcoustID, iTunes, MusicBrainz, CAA, Deezer, lyrics.ovh
-- SQLite für Persistenz (single-user, kein Netzwerk)
+- Externe APIs: AcoustID, iTunes, MusicBrainz, CAA, Deezer, LRCLib
+- **Keine Persistenz** — Files-only: perfekt = `destination/`, Fehler = gelöscht
 - System-Chromaprint für Audio-Fingerprinting
 
 ## 3. Kontextabgrenzung
@@ -35,9 +35,10 @@
 ## 4. Lösungsstrategie
 
 - **Hexagonale Architektur:** Domain-Modelle (dataclasses) sind frei von Infrastruktur-Code
-- **ABCs als Ports:** `FingerprintProvider`, `MetadataProvider`, `TrackTagger`, `TrackRepository`
-- **Asynchron:** Vollständig async/await mit asyncio
-- **Pipeline:** Fingerprint → Enrich → Tag → Cover → Popularity → Dedup → Lyrics → Filing
+- **ABCs als Ports:** `FingerprintProvider`, `MetadataProvider`, `CoverArtProvider`, `PopularityProvider`, `LyricsProvider`, `TrackTagger`, `AsyncHttpClient`
+- **Asynchron:** Vollständig async/await mit asyncio, `asyncio.gather` für parallele API-Calls
+- **Ein-Tag-Write-Prinzip:** Alle ID3-Frames in einem einzigen `write_all`-Durchgang (atomic via `ID3.save`)
+- **Pipeline:** Fingerprint → CAA+MB parallel → MB-Korrektur → iTunes+Lyrics+ArtistImage parallel → Score-Dedup → Popularität → Tag → atomic Move
 
 ## 5. Bausteinsicht
 
@@ -47,49 +48,56 @@
 
 | Schicht | Verzeichnis | Zuständigkeit |
 |---------|------------|---------------|
-| CLI | `cli.py` | Argument-Parsing, DI-Wiring, Signal-Handling |
+| CLI | `cli.py` | Argument-Parsing, DI-Wiring, Signal-Handling, `_run_pipeline` |
 | Services | `services/` | Geschäftslogik, Provider-ABCs, Pipeline |
-| Domain | `domain/` | Wertobjekte (dataclasses) |
+| Domain | `domain/` | Wertobjekte (frozen dataclasses) |
 | Infrastructure | `infra/` | HTTP-Client, Config, Logging, Resilience |
 
-### Ebene 2 – Services
+### Ebene 2 – Module
 
 | Modul | Verantwortung |
 |-------|---------------|
-| `base_processor.py` | Gemeinsamer Polling-Loop für FileProcessor/Uploader |
-| `processor.py` | Inbox-Verarbeitung ohne DB |
-| `uploader.py` | Inbox-Verarbeitung mit DB-Persistenz |
-| `fingerprint.py` | AcoustID-Fingerprinting (Chromaprint) |
-| `metadata.py` | iTunes/MusicBrainz/CoverArt-Metadaten |
-| `tagging.py` | ID3v2-Tagging (mutagen), Cover-Skalierung |
-| `track_processing.py` | Pipeline-Funktionen (enrich, fingerprint, dedup) |
-| `repository.py` | SQLite-Persistenz (WAL-Mode) |
-| `popularity.py` | Deezer-Popularitätscheck |
-| `lyrics.py` | lyrics.ovh-Songtexte |
-| `storage.py` | Datei-Pfade, Sanitize, Remux |
+| `cli.py` | Arg-Parser, DI-Wiring, Signal-Handling, `_run_pipeline` |
+| `services/processor.py` | FileProcessor: Inbox-Polling + 8-Phasen-Pipeline |
+| `services/fingerprint.py` | AcoustID via pyacoustid (Chromaprint) |
+| `services/metadata_itunes.py` | iTunes Search API-Provider |
+| `services/metadata_musicbrainz.py` | MusicBrainz + Cover Art Archive |
+| `services/lyrics.py` | LRCLib-API-Provider |
+| `services/popularity.py` | Deezer-Ranking + `maybe_delete_unpopular` |
+| `services/tagging.py` | ID3v2-Tag-Writer (mutagen), `read_acoustid_score`, `_scale_cover` |
+| `services/file_utils.py` | `sanitize_filename`, `compute_file_path`, `safe_unlink` |
+| `domain/models.py` | `TrackInfo`, `EnrichedInfo`, `MusicBrainzData`, `FingerprintResult`, `ITunesTrackData` |
+| `infra/http.py` | `AsyncHttpClient` ABC + `HttpxAsyncClient` + `download_image_or_none` |
+| `infra/config.py` | Pydantic `Settings` + `load_settings` |
+| `infra/errors.py` | `RadioRipperError` → `ConfigurationError` / `TaggingError` |
+| `infra/logging.py` | `configure_logging` (Console + RotatingFile) |
+| `infra/resilience.py` | `retry_async` Decorator (exponential backoff) |
 
 ## 6. Laufzeitsicht
 
 ![Runtime Flow](diagrams/runtime_flow.puml)
 
-**Hauptprozess:**
-1. FileProcessor pollt Inbox alle 2 Sekunden
-2. MP3 wird nach `.processing` umbenannt (Lock-Mechanismus)
-3. AcoustID-Fingerprinting → bei Match: ID3-Tagging + Album-Move
-4. Cover Art Archive, Deezer-Popularität, lyrics.ovh parallel
-5. Cross-Station-Dedup über AcoustID-Recording-ID
+**Hauptprozess — FileProcessor._process_file (8 Phasen):**
+1. `mp3_inbox/*.mp3` → `.processing`-Rename (Lock-Mechanismus)
+2. Verschieben ins `work_dir`
+3. AcoustID-Fingerprinting → bei `NonRetriableFingerprintError`: löschen; bei `FingerprintError`: nach `failed/` verschieben; bei Score < min: löschen
+4. **Phase 1 — CAA + MB parallel:** `asyncio.gather(fetch_cover, fetch_recording_data, fetch_artist_image)` — MB ist kanonisch
+5. **Phase 2 — MB-Korrektur:** `correct_fingerprint_result` überschreibt AcoustID-Artist/Title mit MB-Daten
+6. **Phase 3 — iTunes + Lyrics + ArtistImage parallel:** `asyncio.gather` über alle drei Provider
+7. **Phase 4 — Score-Dedup:** Vergleicht Score mit bestehender Datei in `destination/`
+8. **Phase 5-8:** `.untested`-Suffix entfernen → Popularitäts-Prüfung → einmaliger `tagger.write_all` → atomarer Move zu `destination/`
 
 ## 7. Verteilungssicht
 
-![Deployment](diagrams/deployment.puml)
-
-**Docker-Deployment:**
-- Multi-Stage-Build (Builder mit uv, Runtime mit ffmpeg + chromaprint)
+**Docker-Deployment (Multi-Stage-Build):**
+- Builder-Stage mit `uv` (Python 3.12-slim) installiert Dependencies
+- Runtime-Stage mit `python:3.12-slim` + ffmpeg + chromaprint
 - Container läuft als unprivilegierter Benutzer `ripper`
 - Volumes: `config:ro`, `work`, `recordings`
-- Healthcheck auf den asyncio-Event-Loop
+- Healthcheck via `pgrep -f 'radio-ripper'`
+- Graceful Shutdown via SIGTERM (`stop_grace_period: 30s`)
 
-## 8. Architektur-Entscheidungen
+## 8. Architekturentscheidungen
 
 | Entscheidung | Begründung |
 |-------------|------------|
@@ -97,32 +105,37 @@
 | httpx statt aiohttp | Saubere Async-API, integrierter Connection-Pool |
 | Pydantic v2 für Config | Automatische Validierung, Aliase, Feld-Constraints |
 | Mutagen für ID3v2 | De-facto-Standard für Python-MP3-Tagging |
-| SQLite (WAL) | Single-User, keine DB-Installation nötig |
-| asyncio + `asyncio.to_thread` | sqlite3 ist synchron — Wrapping in Executor |
+| **Keine Persistenz** — Files-only | Single-User, kein State nötig; perfekt = `destination/`, sonst gelöscht |
+| **LRCLib statt lyrics.ovh** | Kein API-Key nötig, `plainLyrics` + `instrumental`-Flag, Free-Fallback `/api/search` |
+| **Ein Tag-Schreib-Durchgang** | Einzige öffentliche Methode `write_all`, atomic via `ID3.save` |
+| asyncio + `asyncio.gather` | Parallele API-Calls (iTunes + CAA + Deezer + LRCLib) |
 
 ## 9. Qualitätsanforderungen
 
-- **Testabdeckung:** ≥75% (Statement-Coverage)
-- **Linting:** ruff (strikte Regeln), isort-kompatibel
-- **Typisierung:** mypy (strikt für src/, ignorierte externe imports)
-- **CI:** Lint → TypeCheck → Test (3.11-3.13) → Docker-Build
-- **Resilienz:** Retry-Decorator für HTTP-APIs, graceful shutdown
+- **Testabdeckung:** ≥80% (Statement-Coverage); 175 Tests über `pytest --cov`
+- **Linting:** ruff (E, F, W, I, N, UP, B, SIM, ARG, RUF) — ersetzt flake8 + isort
+- **Typisierung:** mypy (relevante Regeln) auf `src/` + `tests/`; Pylance/`pyright` für IDE
+- **CI:** Lint → TypeCheck → Test (Python 3.11-3.13) → Docker-Build (main/master)
+- **Pre-Commit:** ruff + ruff-format + mypy + Standard-Hooks
+- **Resilienz:** `retry_async`-Decorator für HTTP-APIs, graceful shutdown via `asyncio.Event`
 
 ## 10. Technische Risiken
 
 | Risiko | Gegenmaßnahme |
 |--------|---------------|
-| Ausfall AcoustID-API | NullFingerprintProvider, Dateien bleiben `.untested` |
-| Rate-Limit MusicBrainz | 1 req/s manuell + retry_async |
-| Korrupte MP3-Dateien | NonRetriableFingerprintError → sofortige Löschung |
-| Race-Conditions Dateisystem | `.processing`-Rename + asyncio.Lock pro Datei |
+| Ausfall AcoustID-API | `FingerprintError` → Datei nach `failed/` verschoben (Retry bei Neustart) |
+| Rate-Limit MusicBrainz | 1 req/s manuell via `_rate_limited_json` + `retry_async` |
+| Korrupte MP3-Dateien | `NonRetriableFingerprintError` → sofortige Löschung |
+| Race-Conditions Dateisystem | `.processing`-Rename als Lock; sequentielle Verarbeitung pro Inbox |
+| Artist/Title vertauscht (AcoustID) | `correct_fingerprint_result` überschreibt mit MusicBrainz (kanonisch) |
 
 ## 11. Glossar
 
 | Begriff | Bedeutung |
 |---------|-----------|
-| AcoustID | Audio-Fingerprint-Datenbank (chromaprint) |
+| AcoustID | Audio-Fingerprint-Datenbank (Chromaprint) |
 | CAA | Cover Art Archive (MusicBrainz-Projekt) |
+| MBID | MusicBrainz Identifier (UUID für Recording/Release) |
 | ICY | Internet-Stream-Protokoll (SHOUTcast/Icecast) |
 | MusicBrainz | Offene Musik-Enzyklopädie |
-| WAL | Write-Ahead-Log (SQLite-Journal-Modus) |
+| LRCLib | Freie Songtext-API (lrclib.net) |

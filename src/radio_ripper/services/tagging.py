@@ -27,7 +27,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from mutagen.id3 import (
-
     APIC,
     COMM,
     ID3,
@@ -222,10 +221,15 @@ class ID3Tagger(TrackTagger):
         enriched = enriched or EnrichedInfo()
         with _tag_edit_context(file_path, "tags") as audio:
             self._write_all_to(
-                audio, track, provenance,
-                enriched=enriched, cover_bytes=cover_bytes,
+                audio,
+                track,
+                provenance,
+                enriched=enriched,
+                cover_bytes=cover_bytes,
                 recording_id=recording_id,
-                score=score, mb_data=mb_data, artist_image=artist_image,
+                score=score,
+                mb_data=mb_data,
+                artist_image=artist_image,
                 lyrics=lyrics,
             )
 
@@ -255,22 +259,45 @@ class ID3Tagger(TrackTagger):
           6. Liedtexte (USLT, TXXX:Lyrics)
         """
         # ── 1. Alte Frames löschen ──
-        ALLE_FRAMES = (
-            "TPE1", "TPE2", "TIT2", "TALB", "TRSN", "TPUB", "COMM", "TXXX:RIPPEDBY",
-            "TCON", "TDRC", "TRCK", "TPOS", "APIC", "TLEN",
-            "TXXX:ITunesTrackId", "TXXX:ITunesArtistId", "TXXX:ITunesCollectionId",
-            "TXXX:ITunesTrackUrl", "TXXX:ITunesPreviewUrl",
-            "TXXX:ITunesTrackCount", "TXXX:ITunesDiscCount",
-            "TXXX:ITunesCountry", "TXXX:ITunesExplicitness",
-            "TXXX:MusicBrainz Recording Id", "TXXX:AcoustID Score",
+        _alle_frames = (
+            "TPE1",
+            "TPE2",
+            "TIT2",
+            "TALB",
+            "TRSN",
+            "TPUB",
+            "COMM",
+            "TXXX:RIPPEDBY",
+            "TCON",
+            "TDRC",
+            "TRCK",
+            "TPOS",
+            "APIC",
+            "TLEN",
+            "TXXX:ITunesTrackId",
+            "TXXX:ITunesArtistId",
+            "TXXX:ITunesCollectionId",
+            "TXXX:ITunesTrackUrl",
+            "TXXX:ITunesPreviewUrl",
+            "TXXX:ITunesTrackCount",
+            "TXXX:ITunesDiscCount",
+            "TXXX:ITunesCountry",
+            "TXXX:ITunesExplicitness",
+            "TXXX:MusicBrainz Recording Id",
+            "TXXX:AcoustID Score",
             "TSRC",
-            "TXXX:MusicBrainz Release Id", "TXXX:MusicBrainz Release Group Type",
-            "TXXX:MusicBrainz Genres", "TXXX:MusicBrainz Release Title",
-            "TXXX:MusicBrainz Release Date", "TXXX:MusicBrainz Album Release Country",
-            "TXXX:CatalogNumber", "TXXX:Barcode",
-            "USLT", "TXXX:Lyrics",
+            "TXXX:MusicBrainz Release Id",
+            "TXXX:MusicBrainz Release Group Type",
+            "TXXX:MusicBrainz Genres",
+            "TXXX:MusicBrainz Release Title",
+            "TXXX:MusicBrainz Release Date",
+            "TXXX:MusicBrainz Album Release Country",
+            "TXXX:CatalogNumber",
+            "TXXX:Barcode",
+            "USLT",
+            "TXXX:Lyrics",
         )
-        for frame in ALLE_FRAMES:
+        for frame in _alle_frames:
             audio.delall(frame)
 
         # ── 2. Basis-Frames ──

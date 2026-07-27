@@ -7,17 +7,14 @@ package "CLI" {
 }
 
 package "Services" {
-    [base_processor.py] as BASE
     [processor.py] as PROCESSOR
-    [uploader.py] as UPLOADER
     [fingerprint.py] as FP <<ABC>>
-    [metadata.py] as META <<ABC>>
-    [tagging.py] as TAGGING <<ABC>>
+    [metadata_itunes.py] as META_IT <<ABC>>
+    [metadata_musicbrainz.py] as META_MB <<ABC>>
     [lyrics.py] as LYRICS <<ABC>>
     [popularity.py] as POP <<ABC>>
-    [repository.py] as REPO <<ABC>>
-    [track_processing.py] as TP
-    [storage.py] as STORAGE
+    [tagging.py] as TAGGING <<ABC>>
+    [file_utils.py] as FILEUTILS
 }
 
 package "Domain" {
@@ -32,35 +29,33 @@ package "Infrastructure" {
     [errors.py] as ERRORS
 }
 
-CLI --> BASE : erzeugt
 CLI --> PROCESSOR : erzeugt
 CLI --> FP : injiziert
-CLI --> META : injiziert
+CLI --> META_IT : injiziert
+CLI --> META_MB : injiziert
 CLI --> TAGGING : injiziert
 CLI --> POP : injiziert
-
-PROCESSOR -up-|> BASE : extends
-UPLOADER -up-|> BASE : extends
+CLI --> LYRICS : injiziert
+CLI --> HTTP : erzeugt HttpxAsyncClient
 
 PROCESSOR --> FP : ruft auf
-PROCESSOR --> META : ruft auf
+PROCESSOR --> META_IT : ruft auf
+PROCESSOR --> META_MB : ruft auf
 PROCESSOR --> TAGGING : ruft auf
-PROCESSOR --> TP : delegiert
-PROCESSOR --> STORAGE : nutzt
-UPLOADER --> TP : delegiert
-UPLOADER --> REPO : persistiert
+PROCESSOR --> LYRICS : ruft auf
+PROCESSOR --> POP : ruft auf
+PROCESSOR --> FILEUTILS : nutzt
+PROCESSOR --> MODELS : liest/schreibt
 
-TP --> MODELS : liest/schreibt
-TP --> REPO : persistiert
-TP --> TAGGING : taggt
-TP --> STORAGE : moved
-
-FP --> HTTP : HTTP-Calls (AcoustID)
-META --> HTTP : HTTP-Calls (iTunes, MBZ, CAA)
-LYRICS --> HTTP : HTTP-Calls (lyrics.ovh)
+FP --> MODELS : erzeugt FingerprintResult
+META_IT --> HTTP : HTTP-Calls (iTunes)
+META_MB --> HTTP : HTTP-Calls (MusicBrainz, CAA)
+LYRICS --> HTTP : HTTP-Calls (LRCLib)
 POP --> HTTP : HTTP-Calls (Deezer)
+HTTP --> RESILIENCE : retry-Decorator
+
+TAGGING --> MODELS : liest TrackInfo/EnrichedInfo
 
 CONFIG --> ERRORS : wirft
-HTTP --> RESILIENCE : retry-Decorator
 
 @enduml

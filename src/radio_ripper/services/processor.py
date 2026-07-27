@@ -17,6 +17,7 @@ from typing import Any
 
 from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, MusicBrainzData, TrackInfo
 from radio_ripper.infra.config import Settings
+from radio_ripper.services.file_utils import compute_file_path, safe_unlink
 from radio_ripper.services.fingerprint import (
     FingerprintError,
     FingerprintProvider,
@@ -26,9 +27,7 @@ from radio_ripper.services.lyrics import LyricsProvider
 from radio_ripper.services.metadata_itunes import MetadataProvider
 from radio_ripper.services.metadata_musicbrainz import CoverArtProvider
 from radio_ripper.services.popularity import PopularityProvider, maybe_delete_unpopular
-from radio_ripper.services.file_utils import compute_file_path, safe_unlink
 from radio_ripper.services.tagging import TrackTagger, read_acoustid_score
-
 
 # ── helpers ──
 
@@ -51,7 +50,9 @@ def _strip_untested_suffix(
     if new_path.exists():
         logger.warning(
             "[%s] Refuse to rename %s -> %s (target exists).%s",
-            station_name, file_path.name, new_path.name,
+            station_name,
+            file_path.name,
+            new_path.name,
             on_fail or " Keeping .untested.mp3 for manual review.",
         )
         return None
@@ -61,7 +62,10 @@ def _strip_untested_suffix(
     except OSError as exc:
         logger.warning(
             "[%s] rename %s -> %s failed: %s",
-            station_name, file_path.name, new_path.name, exc,
+            station_name,
+            file_path.name,
+            new_path.name,
+            exc,
         )
         return None
 
@@ -356,7 +360,11 @@ class FileProcessor:
             if self._lyrics_provider is None:
                 return
             lyrics = await _fetch_lyrics(
-                self._lyrics_provider, track.artist, track.title, self._log, self._name,
+                self._lyrics_provider,
+                track.artist,
+                track.title,
+                self._log,
+                self._name,
             )
 
         async def _fetch_art_img() -> None:
@@ -364,7 +372,10 @@ class FileProcessor:
             if not self._popularity or not result.artist:
                 return
             artist_image = await _fetch_artist_image(
-                self._popularity, result.artist, self._name, self._log,
+                self._popularity,
+                result.artist,
+                self._name,
+                self._log,
             )
 
         await asyncio.gather(_fetch_itunes(), _fetch_lyr(), _fetch_art_img())
@@ -397,16 +408,14 @@ class FileProcessor:
             existing_score = read_acoustid_score(final_path)
             if existing_score is not None and existing_score >= result.score:
                 self._log.info(
-                    "[DELETE] %s — Grund: existierende Datei hat besseren/gleichen "
-                    "Score (%.4f >= %.4f)",
+                    "[DELETE] %s — Grund: existierende Datei hat besseren/gleichen Score (%.4f >= %.4f)",
                     work_path.name,
                     existing_score,
                     result.score,
                 )
                 return "", None, None
             self._log.info(
-                "Neue Datei hat besseren Score (%.4f > %.4f) — "
-                "alte wird nach erfolgreichem Move gelöscht",
+                "Neue Datei hat besseren Score (%.4f > %.4f) — alte wird nach erfolgreichem Move gelöscht",
                 result.score,
                 existing_score or 0.0,
             )
@@ -442,8 +451,10 @@ class FileProcessor:
             self._log.info(
                 "[%s] MB corrected artist/title: %s -> %s / %s -> %s",
                 self._name,
-                result.artist, corrected.artist,
-                result.title, corrected.title,
+                result.artist,
+                corrected.artist,
+                result.title,
+                corrected.title,
             )
             result = corrected
         stream_title = f"{result.artist} - {result.title}"
@@ -451,12 +462,17 @@ class FileProcessor:
 
         # ── Phase 3: iTunes + Lyrics + Artist-Image parallel ──
         enriched, cover_from_enrich, artist_image, lyrics = await self._enrich_parallel(
-            result, track, work_path,
+            result,
+            track,
+            work_path,
         )
 
         # ── Phase 4: Zielpfad + Score-Entscheidung ──
         provenance, final_path, delete_old = self._compute_destination_and_score(
-            result, track, enriched, work_path,
+            result,
+            track,
+            enriched,
+            work_path,
         )
         if final_path is None:  # bestehende Datei hat besseren Score
             self._cleanup_file(work_path)
@@ -486,17 +502,25 @@ class FileProcessor:
         final_cover = cover_from_caa or cover_from_enrich
         try:
             self._tagger.write_all(
-                stage_path, track, provenance,
-                enriched=enriched, cover_bytes=final_cover,
-                recording_id=result.recording_id, score=result.score,
-                mb_data=mb_data, artist_image=artist_image, lyrics=lyrics,
+                stage_path,
+                track,
+                provenance,
+                enriched=enriched,
+                cover_bytes=final_cover,
+                recording_id=result.recording_id,
+                score=result.score,
+                mb_data=mb_data,
+                artist_image=artist_image,
+                lyrics=lyrics,
             )
             if final_cover is not None:
                 self._log.info("[%s] Cover embedded: %s", self._name, stage_path.name)
             if lyrics:
                 self._log.info(
                     "[%s] Lyrics found for %s (%d chars)",
-                    self._name, stage_path.name, len(lyrics),
+                    self._name,
+                    stage_path.name,
+                    len(lyrics),
                 )
         except Exception as exc:
             self._log.warning("[%s] Tag write failed: %s", self._name, exc)
@@ -508,7 +532,8 @@ class FileProcessor:
         except OSError:
             self._log.error(
                 "[DELETE] %s — Grund: Verschieben nach %s fehlgeschlagen",
-                stage_path.name, final_path,
+                stage_path.name,
+                final_path,
             )
             self._cleanup_file(stage_path)
             return

@@ -90,9 +90,11 @@ class TestID3Tagger:
         _write_blank_mp3(f)
         tagger = ID3Tagger()
         track = TrackInfo("A - B", "A", "B")
-        with patch.object(ID3, "save", side_effect=OSError("disk full")):
-            with pytest.raises(TaggingError, match="Speichern fehlgeschlagen"):
-                tagger.write_all(f, track, "S@u")
+        with (
+            patch.object(ID3, "save", side_effect=OSError("disk full")),
+            pytest.raises(TaggingError, match="Speichern fehlgeschlagen"),
+        ):
+            tagger.write_all(f, track, "S@u")
 
 
 class TestScaleCover:

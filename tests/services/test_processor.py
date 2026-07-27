@@ -18,7 +18,6 @@ from radio_ripper.domain.models import (
 from radio_ripper.infra.config import Settings
 from radio_ripper.services.fingerprint import (
     FingerprintError,
-    FingerprintProvider,
     NonRetriableFingerprintError,
 )
 from radio_ripper.services.processor import (
@@ -29,7 +28,6 @@ from radio_ripper.services.processor import (
     _strip_untested_suffix,
     correct_fingerprint_result,
 )
-
 
 # ── Fixtures ──
 
@@ -47,7 +45,7 @@ def _make_processor(tmp_path: Path, **overrides: Any) -> FileProcessor:
     settings = _settings(tmp_path)
     for key, val in overrides.items():
         settings = settings.model_copy(update={key: val})
-    fp = AsyncMock(spec=FingerprintProvider)
+    fp = AsyncMock()
     meta = AsyncMock()
     tagger = MagicMock()
     return FileProcessor(
@@ -178,7 +176,12 @@ class TestFetchCoverData:
         pop = AsyncMock()
         pop.fetch_artist_image.return_value = b"art"
         cover, mb, art = await _fetch_cover_data(
-            cover_provider, "r1", pop, "Artist", "station", logging.getLogger("t"),
+            cover_provider,
+            "r1",
+            pop,
+            "Artist",
+            "station",
+            logging.getLogger("t"),
         )
         assert cover == b"cover"
         assert mb is not None
@@ -189,7 +192,12 @@ class TestFetchCoverData:
         cover_provider.fetch_cover_by_recording_id.side_effect = RuntimeError("boom")
         cover_provider.fetch_recording_data.return_value = None
         cover, mb, art = await _fetch_cover_data(
-            cover_provider, "r1", None, "", "station", logging.getLogger("t"),
+            cover_provider,
+            "r1",
+            None,
+            "",
+            "station",
+            logging.getLogger("t"),
         )
         assert cover is None
         assert mb is None
@@ -200,7 +208,12 @@ class TestFetchCoverData:
         cover_provider.fetch_cover_by_recording_id.return_value = b"cover"
         cover_provider.fetch_recording_data.return_value = None
         cover, mb, art = await _fetch_cover_data(
-            cover_provider, "r1", None, "", "station", logging.getLogger("t"),
+            cover_provider,
+            "r1",
+            None,
+            "",
+            "station",
+            logging.getLogger("t"),
         )
         assert cover == b"cover"
         assert mb is None
@@ -213,7 +226,12 @@ class TestFetchCoverData:
         pop = AsyncMock()
         pop.fetch_artist_image.side_effect = RuntimeError("z")
         cover, mb, art = await _fetch_cover_data(
-            cover_provider, "r1", pop, "Artist", "station", logging.getLogger("t"),
+            cover_provider,
+            "r1",
+            pop,
+            "Artist",
+            "station",
+            logging.getLogger("t"),
         )
         assert cover is None
         assert mb is None
@@ -379,7 +397,10 @@ class TestFingerprintAndValidate:
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
         proc._fingerprint.fingerprint.return_value = FingerprintResult(
-            artist="A", title="T", score=0.95, recording_id="",
+            artist="A",
+            title="T",
+            score=0.95,
+            recording_id="",
         )
         result = await proc._fingerprint_and_validate(work_path)
         assert result is None
@@ -390,7 +411,10 @@ class TestFingerprintAndValidate:
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
         proc._fingerprint.fingerprint.return_value = FingerprintResult(
-            artist="A", title="T", score=0.5, recording_id="r1",
+            artist="A",
+            title="T",
+            score=0.5,
+            recording_id="r1",
         )
         result = await proc._fingerprint_and_validate(work_path)
         assert result is None
@@ -419,7 +443,7 @@ class TestEnrichParallel:
         result_fp = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         work_path = tmp_path / "song.mp3"
-        enriched, cover, art, lyrics = await proc._enrich_parallel(result_fp, track, work_path)
+        enriched, _cover, _art, _lyrics = await proc._enrich_parallel(result_fp, track, work_path)
         assert enriched is not None
         assert enriched.album == "Album"
 
@@ -429,7 +453,7 @@ class TestEnrichParallel:
         result_fp = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         work_path = tmp_path / "song.mp3"
-        enriched, cover, art, lyrics = await proc._enrich_parallel(result_fp, track, work_path)
+        enriched, cover, _art, _lyrics2 = await proc._enrich_parallel(result_fp, track, work_path)
         assert enriched is None
         assert cover is None
 
@@ -443,7 +467,10 @@ class TestComputeDestinationAndScore:
         result_fp = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         provenance, final_path, delete_old = proc._compute_destination_and_score(
-            result_fp, track, None, tmp_path / "work.mp3",
+            result_fp,
+            track,
+            None,
+            tmp_path / "work.mp3",
         )
         assert provenance == "tag/tag"
         assert final_path is not None
@@ -464,7 +491,10 @@ class TestComputeDestinationAndScore:
 
         proc_mod.read_acoustid_score = lambda path: 0.9  # type: ignore[assignment]
         provenance, final_path, delete_old = proc._compute_destination_and_score(
-            result_fp, track, None, tmp_path / "work.mp3",
+            result_fp,
+            track,
+            None,
+            tmp_path / "work.mp3",
         )
         assert provenance == ""
         assert final_path is None
@@ -482,7 +512,10 @@ class TestComputeDestinationAndScore:
 
         proc_mod.read_acoustid_score = lambda path: 0.5  # type: ignore[assignment]
         provenance, final_path, delete_old = proc._compute_destination_and_score(
-            result_fp, track, None, tmp_path / "work.mp3",
+            result_fp,
+            track,
+            None,
+            tmp_path / "work.mp3",
         )
         assert provenance == "tag/tag"
         assert final_path is not None
@@ -502,7 +535,10 @@ class TestProcessFileHappyPath:
 
         # Fingerprint erfolgreich
         proc._fingerprint.fingerprint.return_value = FingerprintResult(
-            artist="Artist", title="Title", score=0.95, recording_id="rec-1",
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
         )
         # Metadata: None (nutzt track-title als Album-Fallback)
         proc._metadata.fetch.return_value = None

@@ -32,7 +32,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --quiet
-      - run: uv run mypy src/radio_ripper/
+      - run: uv run mypy src/radio_ripper/ tests/
 
   test:
     name: Test (${{ matrix.python-version }})

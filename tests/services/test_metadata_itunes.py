@@ -1,4 +1,4 @@
-"""Tests for radio_ripper.services.metadata."""
+"""Tests for radio_ripper.services.metadata_itunes."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import respx
 
 from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.services.metadata_itunes import ITunesMetadataProvider, _strip_parens
-from radio_ripper.services.metadata_musicbrainz import CoverArtArchiveProvider
 
 
 @pytest.fixture
@@ -84,22 +83,18 @@ class TestITunesMetadataProvider:
             ]
         }
         with respx.mock as mock:
-            # First query (with parens) → empty results
             empty_route = mock.get("https://itunes.apple.com/search").respond(json={"results": []})
-            # Second query (stripped) → hit
             hit_route = mock.get("https://itunes.apple.com/search").respond(json=hit_response)
             info = await provider.fetch("Acid Pauli", "I See a Dark(er)ness")
         assert info is not None
         assert info.artist == "Acid Pauli"
         assert info.title == "I See a Darkness"
         assert info.album == "Bar 25"
-        # Verify both queries were issued (fallback was triggered)
         assert empty_route.called
         assert hit_route.called
         await client.aclose()
 
     async def test_fetch_parens_fallback_not_triggered_on_primary_hit(self, client: HttpxAsyncClient):
-        """If primary query already returns a hit, no fallback is fired."""
         provider = ITunesMetadataProvider(client, metadata_timeout=5.0, cover_timeout=5.0)
         hit_response = {
             "results": [
@@ -123,7 +118,6 @@ class TestITunesMetadataProvider:
         assert _strip_parens("Song (feat. X) [Remix]") == "Song"
         assert _strip_parens("No Parens Here") == "No Parens Here"
         assert _strip_parens("Round Brackets (mix) and [brackets]") == "Round Brackets and"
-        # collapses double spaces
         assert _strip_parens("Word  Multi   Space") == "Word Multi Space"
 
     async def test_download_image_succeeds(self, client: HttpxAsyncClient):
@@ -160,61 +154,3 @@ class TestITunesMetadataProvider:
         url = "https://example.com/60x60bb.jpg"
         upgraded = ITunesMetadataProvider._upgrade_artwork(url)
         assert "600x600" in upgraded
-
-
-_MBZ_RECORDING_URL = "https://musicbrainz.org/ws/2/recording/"
-_CAA_FRONT_URL = "https://coverartarchive.org/release/"
-
-
-class TestCoverArtArchiveProvider:
-    async def test_fetch_cover_returns_bytes_on_hit(self, client: HttpxAsyncClient):
-        provider = CoverArtArchiveProvider(client, timeout=5.0)
-        recording_id = "rec-123"
-        release_id = "rel-999"
-        cover_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 200
-        with respx.mock:
-            respx.get(f"{_MBZ_RECORDING_URL}{recording_id}", params__contains={"fmt": "json"}).respond(
-                json={"releases": [{"id": release_id}]}
-            )
-            respx.get(f"{_CAA_FRONT_URL}{release_id}/front").respond(content=cover_bytes)
-            result = await provider.fetch_cover_by_recording_id(recording_id)
-        assert result == cover_bytes
-        await client.aclose()
-
-    async def test_empty_recording_id_returns_none(self, client: HttpxAsyncClient):
-        provider = CoverArtArchiveProvider(client, timeout=5.0)
-        result = await provider.fetch_cover_by_recording_id("")
-        assert result is None
-        await client.aclose()
-
-    async def test_mbz_api_error_returns_none(self, client: HttpxAsyncClient):
-        provider = CoverArtArchiveProvider(client, timeout=5.0)
-        with respx.mock:
-            respx.get(f"{_MBZ_RECORDING_URL}bad-id", params__contains={"fmt": "json"}).respond(status_code=500)
-            result = await provider.fetch_cover_by_recording_id("bad-id")
-        assert result is None
-        await client.aclose()
-
-    async def test_no_releases_returns_none(self, client: HttpxAsyncClient):
-        provider = CoverArtArchiveProvider(client, timeout=5.0)
-        with respx.mock:
-            respx.get(f"{_MBZ_RECORDING_URL}rec-456", params__contains={"fmt": "json"}).respond(json={"releases": []})
-            result = await provider.fetch_cover_by_recording_id("rec-456")
-        assert result is None
-        await client.aclose()
-
-    async def test_all_caa_404_returns_none(self, client: HttpxAsyncClient):
-        provider = CoverArtArchiveProvider(client, timeout=5.0)
-        release_ids = ["rel-a", "rel-b", "rel-c"]
-        with respx.mock:
-            respx.get(f"{_MBZ_RECORDING_URL}rec-789", params__contains={"fmt": "json"}).respond(
-                json={"releases": [{"id": rid} for rid in release_ids]}
-            )
-            for rid in release_ids:
-                respx.get(f"{_CAA_FRONT_URL}{rid}/front").respond(status_code=404)
-            result = await provider.fetch_cover_by_recording_id("rec-789")
-        assert result is None
-        await client.aclose()
-
-
-

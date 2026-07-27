@@ -4,44 +4,54 @@ actor Betreiber
 participant CLI as "cli.py"
 participant Processor as "FileProcessor"
 participant FP as "FingerprintProvider"
-participant META as "MetadataProvider"
-participant TAG as "TrackTagger"
-participant STORE as "Storage"
-participant REPO as "TrackRepository"
-database FS as "Dateisystem"
+participant CAA_MB as "CoverArtArchiveProvider"
+participant META as "ITunesMetadataProvider"
+participant LYRICS as "LRCLibProvider"
+participant POP as "DeezerPopularityChecker"
+participant TAG as "ID3Tagger"
+participant FS as "Dateisystem"
 
 Betreiber -> CLI: radio-ripper --config config.json
-CLI -> CLI: parse_args, load_settings
-CLI -> CLI: configure_logging
+CLI -> CLI: parse_args, load_settings, configure_logging
 CLI -> Processor: start()
 
-loop Poll-Intervall
-    Processor -> Processor: _drain_inbox()
+loop Poll-Intervall (2s)
     Processor -> FS: glob(*.mp3)
     FS --> Processor: [file.mp3]
+    Processor -> Processor: rename → .processing (Lock)
+    Processor -> Processor: _move_to_work_dir
 
-    Processor -> Processor: rename → .processing
-
-    Processor -> FP: fingerprint(proc_path)
+    Processor -> FP: fingerprint(work_path)
     alt NonRetriableFingerprintError
-        Processor -> Processor: _cleanup_file()
+        Processor -> FS: delete (corrupt)
     else FingerprintError
-        Processor -> Processor: _move_to_temp()
-    else Kein Match
-        Processor -> Processor: _cleanup_file()
+        Processor -> FS: move → failed/ (transient)
+    else kein Match / Score < min
+        Processor -> FS: delete (no match)
     else Match gefunden
-        Processor -> Processor: rename → .untested.mp3
-        Processor -> Processor: remux_mp3()
-        Processor -> META: enrich_and_tag()
-        META -> META: iTunes-Suche
-        META --> Processor: EnrichedInfo
-        Processor -> TAG: write_full()
-        Processor -> TAG: embed_cover()
-        Processor -> FP: fingerprint_song()
-        FP -> FP: CAA-Cover
-        FP -> FP: Deezer-Popularität
-        FP -> FP: Cross-Station-Dedup
-        Processor -> FS: move → destination/
+
+        Processor -> CAA_MB: gather(fetch_cover, fetch_recording_data, fetch_artist_image)
+        CAA_MB --> Processor: (cover, mb_data, artist_image)
+
+        Processor -> Processor: correct_fingerprint_result (MB ist kanonisch)
+        Processor -> META: gather(fetch_itunes, fetch_lyrics, fetch_artist_image_2)
+        META --> Processor: (enriched, cover_from_enrich, lyrics)
+
+        Processor -> Processor: _compute_destination_and_score
+        alt existierende Datei besser
+            Processor -> FS: delete work_path (Dedup)
+        else neue Datei besser / keine existiert
+            Processor -> Processor: _strip_untested_suffix
+            opt Popularität aktiv
+                Processor -> POP: maybe_delete_unpopular
+                POP --> Processor: deleted? True/False
+            end
+            Processor -> TAG: write_all (alle ID3-Frames in einem Durchgang)
+            Processor -> FS: atomic rename → destination/
+            opt alte Datei ersetzt
+                Processor -> FS: safe_unlink(delete_old)
+            end
+        end
     end
 end
 

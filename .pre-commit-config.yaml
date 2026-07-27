@@ -28,6 +28,6 @@ repos:
         entry: uv run mypy
         language: system
         types: ["python"]
-        files: ^src/radio_ripper/
+        files: ^(src/radio_ripper|tests)/
         pass_filenames: false
-        args: ["src/radio_ripper/"]
+        args: ["src/radio_ripper/", "tests/"]

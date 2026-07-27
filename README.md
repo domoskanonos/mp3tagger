@@ -35,23 +35,23 @@ Die Konfiguration erfolgt über eine JSON-Datei (siehe `config.json` / `config.d
 | Feld | Typ | Standard | Beschreibung |
 |------|-----|----------|--------------|
 | `destination` | string | `./recordings` | Zielverzeichnis für getaggte MP3s |
-| `work_dir` | string | `./work` | Arbeitsverzeichnis (DB, Logs, Inbox) |
+| `work_dir` | string | `./work` | Arbeitsverzeichnis (Logs, Inbox) |
+| `mp3_inbox` | string | `./mp3_inbox` | Eingangsverzeichnis für zu taggende MP3s |
 | `log_level` | string | `INFO` | Loglevel (DEBUG/INFO/WARNING/ERROR/CRITICAL) |
 | `min_popularity_rank` | int | `100000` | Deezer-Popularitätsschwelle (0 = deaktiviert) |
 | `acoustid_min_score` | float | `0.85` | Minimale AcoustID-Confidence (0.0–1.0) |
+| `enable_coverartarchive` | bool | `true` | Cover Art Archive aktivieren |
+| `metadata_timeout` | float | `8.0` | iTunes-API-Timeout (Sekunden) |
+| `cover_timeout` | float | `15.0` | Cover-Download-Timeout (Sekunden) |
 
----
+### Umgebungsvariablen
 
-## Entwicklung
+| Variable | Beschreibung |
+|----------|--------------|
+| `ACOUSTID_API_KEY` | AcoustID API-Key (erforderlich) — [Hier beantragen](https://acoustid.org/api-key) |
+| `ACCOUST_ID` | Legacy-Alias (veraltet — `ACOUSTID_API_KEY` bevorzugen) |
 
-```bash
-uv sync --group dev
-uv run pytest --cov -q
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
-uv run mypy src/radio_ripper/
-pre-commit run --all-files
-```
+Siehe `.env.example`.
 
 ---
 
@@ -60,38 +60,95 @@ pre-commit run --all-files
 Das Projekt folgt einer **hexagonalen / Ports-and-Adapters-Architektur**:
 
 ```
-CLI (cli.py)
+CLI (cli.py)                    Argument-Parser, DI-Wiring, Signal-Handling
   │
   ▼
-Services Layer          ← ABCs definieren Ports
-  ├── FileProcessor      Inbox-Verarbeitung
-  ├── Uploader           Manueller Upload
-  ├── Fingerprint        AcoustID-Fingerprinting
-  ├── Metadata           iTunes/MusicBrainz-Anreicherung
-  ├── Tagging            ID3v2-Tagging (mutagen)
-  ├── Repository         Persistenz (SQLite)
-  └── Popularity/Lyrics  Deezer / lyrics.ovh
+Services Layer                  ABCs definieren Ports (Provider austauschbar)
+  ├── processor.py              FileProcessor: Inbox-Polling + 8-Phasen-Pipeline
+  ├── fingerprint.py           AcoustID-Fingerprinting (Chromaprint)
+  ├── metadata_itunes.py       iTunes MetadataProvider
+  ├── metadata_musicbrainz.py  Cover Art Archive + MusicBrainz
+  ├── lyrics.py                LRCLib Songtexte
+  ├── popularity.py            Deezer-Popularitätscheck
+  ├── tagging.py              ID3v2-Tagging (mutagen), einzige write_all-Methode
+  └── file_utils.py           sanitize_filename, compute_file_path, safe_unlink
   │
   ▼
-Domain Layer            ← Wertobjekte (dataclasses)
-  └── TrackInfo, EnrichedInfo, SavedTrack, …
+Domain Layer                    frozen dataclasses, frei von Infrastruktur
+  └── TrackInfo, EnrichedInfo, MusicBrainzData, FingerprintResult, ITunesTrackData
   │
   ▼
-Infrastructure Layer    ← Adapter implementieren Ports
-  ├── HTTP (httpx)       AsyncHttpClient
-  ├── Config (Pydantic)  Settings-Validierung
-  ├── Logging            Rotierende Filehandler
-  └── Resilience         retry_async-Decorator
+Infrastructure Layer            Adapter implementieren Ports
+  ├── http.py                  AsyncHttpClient ABC + HttpxAsyncClient
+  ├── config.py                Pydantic Settings-Validierung
+  ├── logging.py               Rotierende Filehandler
+  ├── resilience.py            retry_async (exponential backoff)
+  └── errors.py                RadioRipperError-Hierarchie
 ```
 
-**Externe Dienste:** AcoustID, iTunes Search API, MusicBrainz, Cover Art Archive, Deezer, lyrics.ovh
+**Kein Persistenz-Layer** — Files-only: perfect = `destination/`, Fehler = gelöscht.
+
+**Externe Dienste:** AcoustID, iTunes Search API, MusicBrainz, Cover Art Archive, Deezer, LRCLib
+
+---
+
+## Tooling-Stack
+
+| Tool | Verwendung | Bemerkung |
+|------|------------|-----------|
+| UV | Paketmanager | `uv sync`, `uv run` |
+| Pydantic v2 | Konfigurations-Validierung | `Settings`-Dataclass mit Constraints |
+| Pytest | Testing | async mode=auto, 175 Tests |
+| MyPy | Typsicherheit | relevante Regeln auf `src/` + `tests/` |
+| Pyright/Pylance | IDE Typisierung | `reportPrivateImportUsage` für mutagen |
+| Ruff | Code-Formatierung + Linting | ersetzt flake8 + isort (Regeln: E, F, W, I, N, UP, B, SIM, ARG, RUF) |
+| Pre-Commit | Qualitätssicherung | ruff + mypy + Standard-Hooks |
+| GitHub Actions | CI/CD | Lint → TypeCheck → Test (3.11-3.13) → Docker |
+| Docker | Containerisierung | Multi-Stage-Build, Push zu Docker Hub |
+
+---
+
+## Entwicklung
+
+```bash
+uv sync --group dev
+uv run pytest --cov -q          # 175 Tests + Coverage
+uv run ruff check src/ tests/    # Linting
+uv run ruff format --check src/ tests/  # Formatierung
+uv run mypy src/radio_ripper/ tests/    # Typcheck
+pre-commit run --all-files      # Alle Hooks
+```
+
+### Teststruktur (1:1 mit Source)
+
+| Source | Test |
+|--------|------|
+| `cli.py` | `tests/test_cli.py` |
+| `domain/models.py` | `tests/domain/test_models.py` |
+| `infra/` | `tests/infra/` (config, errors, http, logging, resilience) |
+| `services/processor.py` | `tests/services/test_processor.py` |
+| `services/file_utils.py` | `tests/services/test_file_utils.py` |
+| `services/fingerprint.py` | `tests/services/test_fingerprint.py` |
+| `services/metadata_itunes.py` | `tests/services/test_metadata_itunes.py` |
+| `services/metadata_musicbrainz.py` | `tests/services/test_metadata_musicbrainz.py` |
+| `services/lyrics.py` | `tests/services/test_lyrics.py` |
+| `services/popularity.py` | `tests/services/test_popularity.py` |
+| `services/tagging.py` | `tests/services/test_tagging.py` |
+
+---
+
+## Dokumentation
+
+- [Arc42-Systemdokumentation](docs/index.md) mit PlantUML-Diagrammen
+- [API-Audits und Pipeline-Analysen](docs/audits/) (Historie)
+- [CHANGELOG](CHANGELOG.md)
 
 ---
 
 ## CI/CD
 
 - **Lint:** ruff check + ruff format
-- **Type-Check:** mypy (strict mode)
+- **Type-Check:** mypy auf `src/` + `tests/`
 - **Test:** pytest + coverage (Python 3.11–3.13)
 - **Docker:** Multi-Stage-Build, Push zu Docker Hub (main/master)
 

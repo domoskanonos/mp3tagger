@@ -41,10 +41,7 @@ def compute_file_path(
     else:
         artist_dir = "Unknown"
         base = sanitize_filename(stream_title_clean)
-    if album:
-        parent = destination / artist_dir / sanitize_filename(album)
-    else:
-        parent = destination / artist_dir
+    parent = destination / artist_dir / sanitize_filename(album) if album else destination / artist_dir
     return parent / f"{base}.mp3"
 
 

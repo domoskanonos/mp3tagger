@@ -8,7 +8,7 @@ Person(ripper, "Betreiber", "Startet den Tagger und überwacht die Ausgabe")
 
 System_Boundary(tagger, "radio-ripper-tag") {
     Container(cli, "CLI", "Python", "Argument-Parser, DI-Wiring, asyncio Event-Loop")
-    Container(proc, "FileProcessor", "Python", "Pollt Inbox, orchestriert Pipeline")
+    Container(proc, "FileProcessor", "Python", "Pollt Inbox, orchestriert 8-Phasen-Pipeline")
 }
 
 System_Ext(acoustid, "AcoustID API", "Fingerprint-Lookup (Chromaprint)")
@@ -16,8 +16,8 @@ System_Ext(itunes, "iTunes Search API", "Metadaten-Anreicherung")
 System_Ext(musicbrainz, "MusicBrainz API", "Recording & Release-Daten")
 System_Ext(coverart, "Cover Art Archive", "Album-Cover")
 System_Ext(deezer, "Deezer API", "Popularitäts-Ranking & Künstlerbilder")
-System_Ext(lyricsovh, "lyrics.ovh", "Songtext-API")
-System_Ext(filesystem, "Dateisystem", "MP3-Inbox, Destination, SQLite-DB, Logs")
+System_Ext(lrclib, "LRCLib API", "Songtexte (lrclib.net)")
+System_Ext(filesystem, "Dateisystem", "MP3-Inbox, Destination, Work-Dir, Logs")
 
 Rel(ripper, cli, "Startet mit --config PATH")
 Rel(cli, proc, "Wired Provider + Konfiguration")
@@ -27,7 +27,7 @@ Rel(proc, itunes, "GET /search?term=…")
 Rel(proc, musicbrainz, "GET /ws/2/recording/{mbid}")
 Rel(proc, coverart, "GET /release/{mbid}/front")
 Rel(proc, deezer, "GET /search?q=…")
-Rel(proc, lyricsovh, "GET /v1/{artist}/{title}")
-Rel(proc, filesystem, "liest/schreibt MP3s, DB, Logs")
+Rel(proc, lrclib, "GET /api/get + /api/search")
+Rel(proc, filesystem, "liest/schreibt MP3s, Logs")
 
 @enduml
