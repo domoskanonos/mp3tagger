@@ -50,7 +50,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
 
     metadata = ITunesMetadataProvider(client, metadata_timeout=settings.metadata_timeout)
     tagger = ID3Tagger()
-    inbox = settings.mp3_inbox or settings.work_dir / "mp3_inbox"
+    inbox = settings.mp3_inbox if settings.mp3_inbox is not None else settings.work_dir / "mp3_inbox"
 
     popularity: PopularityProvider | None = None
     if settings.min_popularity_rank and settings.min_popularity_rank > 0:

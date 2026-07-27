@@ -59,7 +59,7 @@ warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"
-ignore_errors = true
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = [
@@ -89,4 +89,6 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
+    "mypy>=2.3.0",
+    "ruff>=0.16.0",
 ]

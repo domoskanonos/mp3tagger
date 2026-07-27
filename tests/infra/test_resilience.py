@@ -70,7 +70,7 @@ class TestRetryAsync:
         assert len(attempts) == 2
         assert attempts[0][1] == 1
 
-    async def test_max_delay_capped(self):
+    async def test_max_delay_capped(self) -> None:
         sleeps: list[float] = []
 
         import radio_ripper.infra.resilience as r
@@ -80,7 +80,7 @@ class TestRetryAsync:
         async def fake_sleep(t):
             sleeps.append(t)
 
-        r.asyncio.sleep = fake_sleep
+        r.asyncio.sleep = fake_sleep  # type: ignore[assignment]
         try:
 
             @retry_async(max_attempts=4, base_delay=0.001, max_delay=0.005)

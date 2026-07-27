@@ -47,7 +47,7 @@ class TestTrackInfoFromStreamTitle:
     def test_immutable_frozen_dataclass(self):
         ti = TrackInfo(stream_title="x", artist="a", title="t")
         try:
-            ti.artist = "changed"  # type: ignore[misc]
+            ti.artist = "changed"  # pyright: ignore[reportAttributeAccessIssue]
             raise AssertionError("Should have raised FrozenInstanceError")
         except AttributeError:
             pass
@@ -64,7 +64,7 @@ class TestFingerprintResult:
     def test_immutable(self):
         r = FingerprintResult(artist="A", title="T", score=0.9, recording_id="rec-1")
         try:
-            r.score = 0.5  # type: ignore[misc]
+            r.score = 0.5  # pyright: ignore[reportAttributeAccessIssue]
             raise AssertionError("Should have raised FrozenInstanceError")
         except AttributeError:
             pass

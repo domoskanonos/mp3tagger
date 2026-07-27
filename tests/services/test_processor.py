@@ -48,8 +48,10 @@ def _make_processor(tmp_path: Path, **overrides: Any) -> FileProcessor:
     fp = AsyncMock()
     meta = AsyncMock()
     tagger = MagicMock()
+    inbox = settings.mp3_inbox
+    assert inbox is not None
     return FileProcessor(
-        inbox=settings.mp3_inbox,
+        inbox=inbox,
         temp_dir=settings.work_dir / "failed",
         settings=settings,
         fingerprint_provider=fp,
@@ -283,7 +285,7 @@ class TestDrainInbox:
         proc = _make_processor(tmp_path)
         proc._inbox.mkdir(parents=True, exist_ok=True)
         await proc._drain_inbox()
-        proc._fingerprint.fingerprint.assert_not_called()
+        proc._fingerprint.fingerprint.assert_not_called()  # type: ignore[attr-defined]
 
     async def test_processes_all_mp3s(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
@@ -308,7 +310,7 @@ class TestDrainInbox:
         (proc._inbox / "a.mp3").write_bytes(b"\xff\xfb")
         proc._stop_event.set()
         await proc._drain_inbox()
-        proc._fingerprint.fingerprint.assert_not_called()
+        proc._fingerprint.fingerprint.assert_not_called()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
 
 # ── _process_one ──
@@ -335,7 +337,7 @@ class TestProcessOne:
         proc = _make_processor(tmp_path)
         mp3 = tmp_path / "nonexistent.mp3"
         await proc._process_one(mp3)
-        proc._fingerprint.fingerprint.assert_not_called()
+        proc._fingerprint.fingerprint.assert_not_called()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
 
 # ── _move_to_work_dir ──
@@ -368,7 +370,7 @@ class TestFingerprintAndValidate:
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
         expected = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
-        proc._fingerprint.fingerprint.return_value = expected
+        proc._fingerprint.fingerprint.return_value = expected  # type: ignore[attr-defined]
         result = await proc._fingerprint_and_validate(work_path)
         assert result == expected
         assert work_path.exists()
@@ -377,7 +379,7 @@ class TestFingerprintAndValidate:
         proc = _make_processor(tmp_path)
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
-        proc._fingerprint.fingerprint.side_effect = NonRetriableFingerprintError("corrupt")
+        proc._fingerprint.fingerprint.side_effect = NonRetriableFingerprintError("corrupt")  # type: ignore[attr-defined]
         result = await proc._fingerprint_and_validate(work_path)
         assert result is None
         assert not work_path.exists()
@@ -386,7 +388,7 @@ class TestFingerprintAndValidate:
         proc = _make_processor(tmp_path)
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
-        proc._fingerprint.fingerprint.side_effect = FingerprintError("infra error")
+        proc._fingerprint.fingerprint.side_effect = FingerprintError("infra error")  # type: ignore[attr-defined]
         result = await proc._fingerprint_and_validate(work_path)
         assert result is None
         # Datei sollte nach temp_dir verschoben worden sein
@@ -396,7 +398,7 @@ class TestFingerprintAndValidate:
         proc = _make_processor(tmp_path)
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
-        proc._fingerprint.fingerprint.return_value = FingerprintResult(
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
             artist="A",
             title="T",
             score=0.95,
@@ -410,7 +412,7 @@ class TestFingerprintAndValidate:
         proc = _make_processor(tmp_path, acoustid_min_score=0.99)
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
-        proc._fingerprint.fingerprint.return_value = FingerprintResult(
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
             artist="A",
             title="T",
             score=0.5,
@@ -424,7 +426,7 @@ class TestFingerprintAndValidate:
         proc = _make_processor(tmp_path)
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
-        proc._fingerprint.fingerprint.return_value = None
+        proc._fingerprint.fingerprint.return_value = None  # type: ignore[attr-defined]
         result = await proc._fingerprint_and_validate(work_path)
         assert result is None
         assert not work_path.exists()
@@ -436,10 +438,10 @@ class TestFingerprintAndValidate:
 class TestEnrichParallel:
     async def test_all_success(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
-        proc._metadata.fetch.return_value = EnrichedInfo(album="Album")
-        proc._metadata.download_image = AsyncMock(return_value=None)
+        proc._metadata.fetch.return_value = EnrichedInfo(album="Album")  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._lyrics_provider = AsyncMock()
-        proc._lyrics_provider.fetch.return_value = None  # type: ignore[union-attr]
+        proc._lyrics_provider.fetch.return_value = None
         result_fp = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         work_path = tmp_path / "song.mp3"
@@ -449,7 +451,7 @@ class TestEnrichParallel:
 
     async def test_itunes_exception_does_not_crash(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
-        proc._metadata.fetch.side_effect = RuntimeError("iTunes down")
+        proc._metadata.fetch.side_effect = RuntimeError("iTunes down")  # type: ignore[attr-defined]
         result_fp = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         work_path = tmp_path / "song.mp3"
@@ -489,7 +491,7 @@ class TestComputeDestinationAndScore:
         # ID3Tag mit Score 0.9 anlegen — wir mocken read_acoustid_score
         import radio_ripper.services.processor as proc_mod
 
-        proc_mod.read_acoustid_score = lambda path: 0.9  # type: ignore[assignment]
+        proc_mod.read_acoustid_score = lambda path: 0.9
         provenance, final_path, delete_old = proc._compute_destination_and_score(
             result_fp,
             track,
@@ -510,7 +512,7 @@ class TestComputeDestinationAndScore:
         existing.write_bytes(b"\xff\xfb\x00\x00")
         import radio_ripper.services.processor as proc_mod
 
-        proc_mod.read_acoustid_score = lambda path: 0.5  # type: ignore[assignment]
+        proc_mod.read_acoustid_score = lambda path: 0.5
         provenance, final_path, delete_old = proc._compute_destination_and_score(
             result_fp,
             track,
@@ -534,15 +536,15 @@ class TestProcessFileHappyPath:
         _write_mp3(mp3, size=512)
 
         # Fingerprint erfolgreich
-        proc._fingerprint.fingerprint.return_value = FingerprintResult(
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
             artist="Artist",
             title="Title",
             score=0.95,
             recording_id="rec-1",
         )
         # Metadata: None (nutzt track-title als Album-Fallback)
-        proc._metadata.fetch.return_value = None
-        proc._metadata.download_image = AsyncMock(return_value=None)
+        proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         # Cover-Provider: None (kein Cover, keine MB-Korrektur)
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
@@ -561,7 +563,7 @@ class TestProcessFileFailurePaths:
         proc._inbox.mkdir(parents=True, exist_ok=True)
         mp3 = proc._inbox / "song.mp3"
         _write_mp3(mp3, size=512)
-        proc._fingerprint.fingerprint.side_effect = NonRetriableFingerprintError("corrupt")
+        proc._fingerprint.fingerprint.side_effect = NonRetriableFingerprintError("corrupt")  # type: ignore[attr-defined]
 
         await proc._process_one(mp3)
 
