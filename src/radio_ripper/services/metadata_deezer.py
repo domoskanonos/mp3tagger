@@ -37,6 +37,7 @@ class DeezerData:
     duration_s: int | None = None
     isrc: str | None = None
     upc: str | None = None
+    rank: int | None = None
 
 
 class DeezerProvider(ABC):
@@ -91,6 +92,7 @@ class DeezerMetadataProvider(DeezerProvider):
             album=album_data.get("title"),
             duration_s=track.get("duration"),
             isrc=track.get("isrc"),
+            rank=track.get("rank"),
         )
 
         album_id = album_data.get("id")

@@ -26,6 +26,7 @@ class Settings(BaseModel):
     acoustid_min_score: float = Field(default=0.85, ge=0.0, le=1.0)
     min_popularity_rank: int = Field(default=100000, ge=0)
     enable_coverartarchive: bool = True
+    max_concurrent: int = Field(default=3, ge=1, le=20)
 
     @field_validator("log_level")
     @classmethod

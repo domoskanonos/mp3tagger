@@ -27,7 +27,7 @@ from radio_ripper.services.lyrics import LyricsProvider
 from radio_ripper.services.metadata_deezer import DeezerMetadataProvider
 from radio_ripper.services.metadata_itunes import MetadataProvider
 from radio_ripper.services.metadata_musicbrainz import CoverArtProvider
-from radio_ripper.services.popularity import PopularityProvider, maybe_delete_unpopular
+from radio_ripper.services.popularity import PopularityProvider
 from radio_ripper.services.tagging import TrackTagger, read_acoustid_score
 
 # ── helpers ──
@@ -214,6 +214,7 @@ class FileProcessor:
         self._deezer_provider = deezer_provider
         self._popularity = popularity_provider
         self._lyrics_provider = lyrics_provider
+        self._semaphore = asyncio.Semaphore(settings.max_concurrent)
 
     # ── public lifecycle ──
 
@@ -249,13 +250,21 @@ class FileProcessor:
         self._log.info("%s stopped", self._name.title())
 
     async def _drain_inbox(self) -> None:
-        for mp3 in sorted(self._inbox.glob("*.mp3")):
-            if self._stop_event.is_set():
-                return
-            try:
-                await self._process_one(mp3)
-            except Exception:
-                self._log.exception("Unexpected error processing %s", mp3)
+        mp3s = sorted(self._inbox.glob("*.mp3"))
+        if not mp3s:
+            return
+
+        async def _gated_process(mp3: Path) -> None:
+            async with self._semaphore:
+                if self._stop_event.is_set():
+                    return
+                try:
+                    await self._process_one(mp3)
+                except Exception:
+                    self._log.exception("Unexpected error processing %s", mp3)
+
+        tasks = [asyncio.create_task(_gated_process(mp3)) for mp3 in mp3s]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _process_one(self, mp3_path: Path) -> None:
         proc_path = mp3_path.with_suffix(".processing")
@@ -435,18 +444,28 @@ class FileProcessor:
         if result is None:
             return
 
-        # ── Phase 1: CAA + MB parallel ──
-        mb_data: MusicBrainzData | None = None
-        cover_from_caa: bytes | None = None
-        if self._cover_provider and result.recording_id:
-            cover_from_caa, mb_data, _ = await _fetch_cover_data(
+        # ── Phase 1+3: CAA+MB || iTunes+Lyrics+ArtImg (parallel, beide nur vom Fingerprint abhängig) ──
+        fp_result = result
+        stream_title_pre = f"{fp_result.artist} - {fp_result.title}"
+        track_pre = TrackInfo.from_stream_title(stream_title_pre)
+
+        async def _phase1_caa_mb() -> tuple[bytes | None, MusicBrainzData | None]:
+            if not self._cover_provider or not fp_result.recording_id:
+                return None, None
+            cover, mb, _ = await _fetch_cover_data(
                 self._cover_provider,
-                result.recording_id,
+                fp_result.recording_id,
                 None,
                 "",
                 self._name,
                 self._log,
             )
+            return cover, mb
+
+        phase1_task = asyncio.create_task(_phase1_caa_mb())
+        phase3_task = asyncio.create_task(self._enrich_parallel(fp_result, track_pre, work_path))
+        cover_from_caa, mb_data = await phase1_task
+        enriched, cover_from_enrich, artist_image, lyrics = await phase3_task
 
         # ── Phase 2: MB-Korrektur (MB-Daten sind kanonisch) ──
         corrected = correct_fingerprint_result(result, mb_data)
@@ -462,13 +481,6 @@ class FileProcessor:
             result = corrected
         stream_title = f"{result.artist} - {result.title}"
         track = TrackInfo.from_stream_title(stream_title)
-
-        # ── Phase 3: iTunes + Lyrics + Artist-Image parallel ──
-        enriched, cover_from_enrich, artist_image, lyrics = await self._enrich_parallel(
-            result,
-            track,
-            work_path,
-        )
 
         # ── Phase 4: Zielpfad + Score-Entscheidung ──
         provenance, final_path, delete_old = self._compute_destination_and_score(
@@ -487,21 +499,7 @@ class FileProcessor:
             self._cleanup_file(work_path)
             return
 
-        # ── Phase 6: Popularitäts-Prüfung ──
-        if self._settings.min_popularity_rank > 0 and self._popularity and (result.artist or result.title):
-            deleted = await maybe_delete_unpopular(
-                file_path=stage_path,
-                station_name=self._name,
-                artist=result.artist,
-                title=result.title,
-                min_rank=self._settings.min_popularity_rank,
-                popularity_provider=self._popularity,
-                logger=self._log,
-            )
-            if deleted:
-                return
-
-        # ── Phase 7: Deezer-Metadaten (Cover + Label + Genre + Jahr) ──
+        # ── Phase 6: Deezer-Metadaten (Cover + Label + Genre + Jahr + Rank) ──
         deezer_data = None
         deezer_cover = None
         if self._deezer_provider is not None and (result.artist or result.title):
@@ -511,6 +509,39 @@ class FileProcessor:
                     deezer_cover = deezer_data.cover_bytes
             except Exception:
                 self._log.debug("[%s] Deezer fetch failed", self._name)
+
+        # ── Phase 7: Popularitäts-Prüfung (nutzt deezer_data.rank, kein extra API-Call) ──
+        if (
+            self._settings.min_popularity_rank > 0
+            and deezer_data is not None
+            and (result.artist or result.title)
+        ):
+            rank = deezer_data.rank
+            if rank is None:
+                safe_unlink(stage_path)
+                self._log.warning(
+                    "[%s] Deleted unknown track (not on Deezer): %s",
+                    self._name,
+                    stage_path.name,
+                )
+                return
+            if rank < self._settings.min_popularity_rank:
+                safe_unlink(stage_path)
+                self._log.warning(
+                    "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
+                    self._name,
+                    rank,
+                    self._settings.min_popularity_rank,
+                    stage_path.name,
+                )
+                return
+            self._log.info(
+                "[%s] Popularity rank OK — %s / %s = %d",
+                self._name,
+                result.artist,
+                result.title,
+                rank,
+            )
 
         # ── Phase 8: Cover-Auswahl (Deezer → CAA → iTunes) ──
         final_cover = deezer_cover or cover_from_caa or cover_from_enrich
