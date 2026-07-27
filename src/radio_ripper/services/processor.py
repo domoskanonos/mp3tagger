@@ -1,7 +1,9 @@
-"""File processor — single-worker inbox processing for recorded MP3s.
+"""File processor — concurrent inbox processing for recorded MP3s.
 
-Scans an ``inbox`` (mp3_inbox) for ``.mp3`` files and processes them one by
-one: fingerprint → enrich → CAA → MB → popularity → lyrics → ONE tag write,
+Scans an ``inbox`` (mp3_inbox) for ``.mp3`` files and processes up to
+``max_concurrent`` of them in parallel. Per file:
+fingerprint → [CAA+MB || iTunes+Lyrics+ArtImg || Deezer] (parallel) →
+MB-Korrektur → Score-Vergleich → Popularitäts-Prüfung → ONE tag write,
 all in a ``work_dir`` staging area, then atomically moved to ``destination/``.
 No database involved — files are either perfect (in destination/) or deleted.
 """
@@ -24,7 +26,7 @@ from radio_ripper.services.fingerprint import (
     NonRetriableFingerprintError,
 )
 from radio_ripper.services.lyrics import LyricsProvider
-from radio_ripper.services.metadata_deezer import DeezerMetadataProvider
+from radio_ripper.services.metadata_deezer import DeezerData, DeezerMetadataProvider
 from radio_ripper.services.metadata_itunes import MetadataProvider
 from radio_ripper.services.metadata_musicbrainz import CoverArtProvider
 from radio_ripper.services.popularity import PopularityProvider
@@ -168,18 +170,27 @@ async def _fetch_lyrics(
 
 
 class FileProcessor:
-    """Single-worker inbox processor.
+    """Concurrent inbox processor (Semaphore-begrenzt, ``max_concurrent``).
 
-    Polls *inbox* for ``.mp3`` files, processes each sequentially:
-      1. Move ``.processing`` to ``work_dir/``.
-      2. Fingerprint (AcoustID) — score < min → delete.
-      3. Remux + enrich (iTunes) + basic tags.
-      4. Score-compare with existing file at destination.
-      5. CAA cover, MusicBrainz metadata, artist image, popularity.
-      6. Lyrics.
-      7. Atomic rename to ``destination/``.
-    If ANY step fails the staging file is deleted; ``destination/`` is never
-    touched until the file is fully processed.
+    Pollt *inbox* nach ``.mp3``-Dateien und verarbeitet bis zu
+    ``max_concurrent`` parallel. Pro Datei:
+
+      1. Move ``.processing`` → ``work_dir/``.
+      2. Fingerprint (AcoustID) — Score < min → löschen.
+      3. Parallel: CAA+MB || iTunes+Lyrics+ArtImg || Deezer.
+      4. MB-Korrektur (artist/title) — ggf. Deezer re-fetch.
+      5. Score-Vergleich mit bestehender Datei im Destination.
+      6. ``.untested`` → ``.mp3`` umbenennen.
+      7. Popularitäts-Prüfung über den Deezer-Rang (gleicher API-Call
+         wie Phase 3, kein extra Request). Datei wird gelöscht wenn
+         Deezer sie nicht kennt oder der Rang unter ``min_popularity_rank``
+         liegt.
+      8. One-Pass Tag-Write (Cover-Prio: Deezer → CAA → iTunes).
+      9. Atomarer Move nach ``destination/``; alte Datei wird bei
+         höherem Score ersetzt.
+
+    Wenn ein Schritt scheitert, wird die Stage-Datei gelöscht;
+    ``destination/`` wird erst nach vollständigem Erfolg berührt.
     """
 
     def __init__(
@@ -444,10 +455,14 @@ class FileProcessor:
         if result is None:
             return
 
-        # ── Phase 1+3: CAA+MB || iTunes+Lyrics+ArtImg (parallel, beide nur vom Fingerprint abhängig) ──
+        # ── Phase 3: CAA+MB || iTunes+Lyrics+ArtImg || Deezer (alle parallel, alle nur vom Fingerprint abhängig) ──
         fp_result = result
         stream_title_pre = f"{fp_result.artist} - {fp_result.title}"
         track_pre = TrackInfo.from_stream_title(stream_title_pre)
+
+        # deezer_attempted unterscheidet "Deezer angerufen, kein Treffer" (→ löschen)
+        # von "Deezer gar nicht versucht / Exception" (→ überspringen, API evtl. down)
+        deezer_attempted = False
 
         async def _phase1_caa_mb() -> tuple[bytes | None, MusicBrainzData | None]:
             if not self._cover_provider or not fp_result.recording_id:
@@ -462,12 +477,27 @@ class FileProcessor:
             )
             return cover, mb
 
+        async def _phase_deezer() -> tuple[DeezerData | None, bytes | None]:
+            nonlocal deezer_attempted
+            if not self._deezer_provider or not (fp_result.artist or fp_result.title):
+                return None, None
+            try:
+                data = await self._deezer_provider.fetch(fp_result.artist, fp_result.title)
+                deezer_attempted = True
+                cover = data.cover_bytes if data else None
+                return data, cover
+            except Exception:
+                self._log.debug("[%s] Deezer fetch failed", self._name)
+                return None, None
+
         phase1_task = asyncio.create_task(_phase1_caa_mb())
         phase3_task = asyncio.create_task(self._enrich_parallel(fp_result, track_pre, work_path))
+        deezer_task = asyncio.create_task(_phase_deezer())
         cover_from_caa, mb_data = await phase1_task
         enriched, cover_from_enrich, artist_image, lyrics = await phase3_task
+        deezer_data, deezer_cover = await deezer_task
 
-        # ── Phase 2: MB-Korrektur (MB-Daten sind kanonisch) ──
+        # ── Phase 4: MB-Korrektur (MB-Daten sind kanonisch) ──
         corrected = correct_fingerprint_result(result, mb_data)
         if corrected is not result:
             self._log.info(
@@ -478,11 +508,25 @@ class FileProcessor:
                 result.title,
                 corrected.title,
             )
+            # MB hat artist/title geändert → Deezer war für "falschen" Künstler gesucht → neu fetchen
+            if (
+                deezer_data is not None
+                and (corrected.artist != fp_result.artist or corrected.title != fp_result.title)
+                and self._deezer_provider is not None
+            ):
+                try:
+                    deezer_data = await self._deezer_provider.fetch(corrected.artist, corrected.title)
+                    deezer_attempted = True
+                    deezer_cover = deezer_data.cover_bytes if deezer_data else None
+                except Exception:
+                    self._log.debug("[%s] Deezer re-fetch after MB correction failed", self._name)
+                    deezer_data = None
+                    deezer_cover = None
             result = corrected
         stream_title = f"{result.artist} - {result.title}"
         track = TrackInfo.from_stream_title(stream_title)
 
-        # ── Phase 4: Zielpfad + Score-Entscheidung ──
+        # ── Phase 5: Zielpfad + Score-Entscheidung ──
         provenance, final_path, delete_old = self._compute_destination_and_score(
             result,
             track,
@@ -493,31 +537,16 @@ class FileProcessor:
             self._cleanup_file(work_path)
             return
 
-        # ── Phase 5: .untested → .mp3 umbenennen ──
+        # ── Phase 6: .untested → .mp3 umbenennen ──
         stage_path = _strip_untested_suffix(work_path, self._log, self._name, on_fail="")
         if stage_path is None:
             self._cleanup_file(work_path)
             return
 
-        # ── Phase 6: Deezer-Metadaten (Cover + Label + Genre + Jahr + Rank) ──
-        deezer_data = None
-        deezer_cover = None
-        if self._deezer_provider is not None and (result.artist or result.title):
-            try:
-                deezer_data = await self._deezer_provider.fetch(result.artist, result.title)
-                if deezer_data:
-                    deezer_cover = deezer_data.cover_bytes
-            except Exception:
-                self._log.debug("[%s] Deezer fetch failed", self._name)
-
         # ── Phase 7: Popularitäts-Prüfung (nutzt deezer_data.rank, kein extra API-Call) ──
-        if (
-            self._settings.min_popularity_rank > 0
-            and deezer_data is not None
-            and (result.artist or result.title)
-        ):
-            rank = deezer_data.rank
-            if rank is None:
+        if self._settings.min_popularity_rank > 0 and (result.artist or result.title):
+            if deezer_attempted and deezer_data is None:
+                # Deezer angerufen, 0 Treffer → "nicht auf Deezer" → löschen
                 safe_unlink(stage_path)
                 self._log.warning(
                     "[%s] Deleted unknown track (not on Deezer): %s",
@@ -525,25 +554,38 @@ class FileProcessor:
                     stage_path.name,
                 )
                 return
-            if rank < self._settings.min_popularity_rank:
-                safe_unlink(stage_path)
-                self._log.warning(
-                    "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
-                    self._name,
-                    rank,
-                    self._settings.min_popularity_rank,
-                    stage_path.name,
-                )
-                return
-            self._log.info(
-                "[%s] Popularity rank OK — %s / %s = %d",
-                self._name,
-                result.artist,
-                result.title,
-                rank,
-            )
+            if not deezer_attempted:
+                # Deezer call fehlgeschlagen (API down) oder Provider fehlt → nicht löschen
+                self._log.debug("[%s] Skip popularity check (Deezer not attempted)", self._name)
+            elif deezer_data is not None:
+                rank = deezer_data.rank
+                if rank is None:
+                    # Sollte nicht passieren, aber defensiv
+                    self._log.warning(
+                        "[%s] Deezer treffer ohne rank? Behalte: %s",
+                        self._name,
+                        stage_path.name,
+                    )
+                elif rank < self._settings.min_popularity_rank:
+                    safe_unlink(stage_path)
+                    self._log.warning(
+                        "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
+                        self._name,
+                        rank,
+                        self._settings.min_popularity_rank,
+                        stage_path.name,
+                    )
+                    return
+                else:
+                    self._log.info(
+                        "[%s] Popularity rank OK — %s / %s = %d",
+                        self._name,
+                        result.artist,
+                        result.title,
+                        rank,
+                    )
 
-        # ── Phase 8: Cover-Auswahl (Deezer → CAA → iTunes) ──
+        # ── Phase 8: Tag-Write (Cover: Deezer → CAA → iTunes) ──
         final_cover = deezer_cover or cover_from_caa or cover_from_enrich
 
         try:
@@ -572,7 +614,7 @@ class FileProcessor:
         except Exception as exc:
             self._log.warning("[%s] Tag write failed: %s", self._name, exc)
 
-        # ── Phase 8: Atomarer Move zu destination ──
+        # ── Phase 9: Atomarer Move zu destination + ggf. alte Datei löschen ──
         final_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             stage_path.rename(final_path)
@@ -587,7 +629,6 @@ class FileProcessor:
 
         self._log.info("[%s] Fertig: %s", self._name, final_path)
 
-        # ── Alte Datei nach erfolgreichem Move löschen ──
         if delete_old is not None:
             self._log.info(
                 "[DELETE] %s — Grund: durch bessere Version ersetzt",
