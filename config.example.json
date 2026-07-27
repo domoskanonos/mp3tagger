@@ -1,0 +1,5 @@
+{
+  "destination": "./recordings",
+  "mp3_inbox": "./recordings",
+  "acoustid_min_score": 0.90
+}

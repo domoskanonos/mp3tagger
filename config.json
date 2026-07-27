@@ -1,5 +1,5 @@
 {
-  "destination": "./recordings",
-  "mp3_inbox": "./recordings",
+  "destination": "/home/laptop/Musik",
+  "mp3_inbox": "/home/laptop/recordings",
   "acoustid_min_score": 0.90
 }
