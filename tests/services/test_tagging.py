@@ -27,12 +27,12 @@ class TestID3Tagger:
         track = TrackInfo(stream_title="Adele - Hello", artist="Adele", title="Hello")
         tagger.write_all(f, track, "Rock@http://x")
         audio = ID3(f)
-        assert audio.get("TPE1").text == ["Adele"]
-        assert audio.get("TIT2").text == ["Hello"]
-        assert audio.get("TALB").text == ["Hello"]
-        assert audio.get("COMM::eng").text == ["Recorded via radiostream"]
-        assert audio.get("TXXX:RIPPEDBY").text == ["Rock@http://x"]
-        assert audio.get("TXXX:AcoustID Score").text == ["0.0"]
+        assert (f1 := audio.get("TPE1")) is not None and f1.text == ["Adele"]
+        assert (f2 := audio.get("TIT2")) is not None and f2.text == ["Hello"]
+        assert (f3 := audio.get("TALB")) is not None and f3.text == ["Hello"]
+        assert (f4 := audio.get("COMM::eng")) is not None and f4.text == ["Recorded via radiostream"]
+        assert (f5 := audio.get("TXXX:RIPPEDBY")) is not None and f5.text == ["Rock@http://x"]
+        assert (f6 := audio.get("TXXX:AcoustID Score")) is not None and f6.text == ["0.0"]
 
     def test_write_all_with_enriched(self, tmp_path: Path):
         f = tmp_path / "song.mp3"
@@ -42,9 +42,9 @@ class TestID3Tagger:
         enriched = EnrichedInfo(artist="Adele", title="Hello", album="25", year="2015", genre="Pop")
         tagger.write_all(f, track, "Rock@url", enriched=enriched)
         audio = ID3(f)
-        assert audio.get("TALB").text == ["25"]
-        assert str(audio.get("TDRC").text[0]) == "2015"
-        assert audio.get("TCON").text == ["Pop"]
+        assert (f1 := audio.get("TALB")) is not None and f1.text == ["25"]
+        assert (f2 := audio.get("TDRC")) is not None and str(f2.text[0]) == "2015"
+        assert (f3 := audio.get("TCON")) is not None and f3.text == ["Pop"]
 
     def test_write_all_with_cover(self, tmp_path: Path):
         f = tmp_path / "song.mp3"
@@ -65,8 +65,8 @@ class TestID3Tagger:
         track = TrackInfo(stream_title="A - B", artist="A", title="B")
         tagger.write_all(f, track, "S@u", recording_id="abc-123", score=0.9876)
         audio = ID3(f)
-        assert audio.get("TXXX:MusicBrainz Recording Id").text == ["abc-123"]
-        assert audio.get("TXXX:AcoustID Score").text == ["0.9876"]
+        assert (f1 := audio.get("TXXX:MusicBrainz Recording Id")) is not None and f1.text == ["abc-123"]
+        assert (f2 := audio.get("TXXX:AcoustID Score")) is not None and f2.text == ["0.9876"]
 
     def test_write_all_with_lyrics(self, tmp_path: Path):
         f = tmp_path / "song.mp3"
@@ -75,8 +75,8 @@ class TestID3Tagger:
         track = TrackInfo(stream_title="A - B", artist="A", title="B")
         tagger.write_all(f, track, "S@u", lyrics="Hello\nWorld")
         audio = ID3(f)
-        assert audio.get("USLT::eng").text == "Hello\nWorld"
-        assert audio.get("TXXX:Lyrics").text == ["Hello\nWorld"]
+        assert (f1 := audio.get("USLT::eng")) is not None and f1.text == "Hello\nWorld"
+        assert (f2 := audio.get("TXXX:Lyrics")) is not None and f2.text == ["Hello\nWorld"]
 
     def test_write_all_nonexistent_file_raises(self, tmp_path: Path):
         tagger = ID3Tagger()

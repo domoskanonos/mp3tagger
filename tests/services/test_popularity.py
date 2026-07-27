@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from radio_ripper.infra.http import AsyncHttpClient
 from radio_ripper.services.popularity import DeezerPopularityChecker, maybe_delete_unpopular
 
 
-class _FakeClient:
+class _FakeClient(AsyncHttpClient):
     def __init__(self, result: Any = None, *, raise_on_get_json: bool = False) -> None:
         self._result = result
         self._raise_on_get_json = raise_on_get_json
@@ -26,6 +28,18 @@ class _FakeClient:
 
     async def get_bytes(self, url: str, *, timeout: float | None = None) -> bytes:
         return b""
+
+    def stream_binary(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> AsyncIterator[bytes]:
+        return iter([b""])  # type: ignore[return-value]
+
+    def response_headers(self) -> dict[str, str]:
+        return {}
 
     async def aclose(self) -> None:
         pass

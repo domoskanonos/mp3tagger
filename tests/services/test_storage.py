@@ -1,5 +1,7 @@
 """Tests for radio_ripper.services.file_utils."""
 
+# pyright: reportPrivateImportUsage=false
+
 from __future__ import annotations
 
 from radio_ripper.services.file_utils import compute_file_path, remove_empty_parents, sanitize_filename
@@ -60,7 +62,7 @@ class TestReadAcoustidScore:
         assert read_acoustid_score(f) is None
 
     def test_returns_score_when_present(self, tmp_path):
-        from mutagen.id3 import ID3, TXXX
+        from mutagen.id3 import ID3, TXXX  # pyright: ignore[reportPrivateImportUsage]
 
         f = tmp_path / "test.mp3"
         f.write_text("data")

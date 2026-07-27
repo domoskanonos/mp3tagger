@@ -1,4 +1,5 @@
 # mypy: disable-error-code="no-untyped-call"
+# pyright: reportPrivateImportUsage=false
 """ID3v2-Tagger basierend auf :mod:`mutagen`.
 
 :class:`TrackTagger` ist das ABC, :class:`ID3Tagger` die Standard-Implementierung.
@@ -26,6 +27,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from mutagen.id3 import (
+
     APIC,
     COMM,
     ID3,

@@ -57,7 +57,7 @@ class TestAcoustidFingerprintProvider:
         provider = AcoustidFingerprintProvider("test-key")
         # Force ImportError by injecting a sentinel that raises on attribute access
         original = sys.modules.get("acoustid")
-        sys.modules["acoustid"] = None  # raise ImportError/TypeError on `import acoustid`
+        sys.modules["acoustid"] = None  # type: ignore[assignment]
         try:
             with pytest.raises(FingerprintError, match="acoustid library not installed"):
                 await provider.fingerprint(Path("/tmp/test.mp3"))
@@ -121,11 +121,12 @@ class TestAcoustidFingerprintProvider:
             from acoustid import WebServiceError
         except ImportError:
             pytest.skip("acoustid not installed; WebServiceError unavailable")
-        with (
-            patch("acoustid.match", side_effect=WebServiceError("error 5: invalid key")),
-            pytest.raises(FingerprintError, match="acoustid lookup failed"),
-        ):
-            await provider.fingerprint(Path("/tmp/test.mp3"))
+        else:
+            with (
+                patch("acoustid.match", side_effect=WebServiceError("error 5: invalid key")),
+                pytest.raises(FingerprintError, match="acoustid lookup failed"),
+            ):
+                await provider.fingerprint(Path("/tmp/test.mp3"))
 
     async def test_generator_iteration_error_wrapped_as_fingerprint_error(self) -> None:
         """If materializing the generator (list()) raises (e.g. WebServiceError
