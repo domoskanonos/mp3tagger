@@ -1,5 +1,14 @@
 {
   "destination": "./recordings",
   "mp3_inbox": "./recordings",
-  "acoustid_min_score": 0.90
+  "acoustid_min_score": 0.90,
+  "min_popularity_rank": 100000,
+  "max_concurrent": 5,
+
+  "catalog_db": "./work/catalog.db",
+  "reconcile_on_startup": true,
+  "max_collection_size": 0,
+  "enable_eviction": false,
+  "exclude_release_group_types": ["Live", "Bootleg"],
+  "exclude_title_patterns": []
 }

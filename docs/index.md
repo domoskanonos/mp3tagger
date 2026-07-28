@@ -23,7 +23,7 @@
 
 - Linux als Zielplattform (Docker-Container)
 - Externe APIs: AcoustID, iTunes, MusicBrainz, CAA, Deezer, LRCLib
-- **Keine Persistenz** — Files-only: perfekt = `destination/`, Fehler = gelöscht
+- **SQLite-Katalog** — Dateisystem ist Source-of-Truth, Catalog ist durchsuchbarer Index for Duplikatserkennung und Collection-Management
 - System-Chromaprint für Audio-Fingerprinting
 
 ## 3. Kontextabgrenzung
@@ -38,7 +38,8 @@
 - **ABCs als Ports:** `FingerprintProvider`, `MetadataProvider`, `CoverArtProvider`, `PopularityProvider`, `LyricsProvider`, `TrackTagger`, `AsyncHttpClient`
 - **Asynchron:** Vollständig async/await mit asyncio, `asyncio.gather` für parallele API-Calls
 - **Ein-Tag-Write-Prinzip:** Alle ID3-Frames in einem einzigen `write_all`-Durchgang (atomic via `ID3.save`)
-- **Pipeline:** Fingerprint → CAA+MB parallel → MB-Korrektur → iTunes+Lyrics+ArtistImage parallel → Score-Dedup → Popularität → Tag → atomic Move
+- **SQLite-Katalog:** ISRC-basierte Duplikatserkennung, Eviction, Live/Bootleg-Ausschluss, Reconcile beim Start
+- **Pipeline:** Fingerprint → CAA+MB parallel → MB-Korrektur → iTunes+Lyrics+ArtistImage parallel → Score-Dedup (Catalog + Legacy-Fallback) → Popularität → Catalog-Upsert → Eviction → Tag → atomic Move
 
 ## 5. Bausteinsicht
 
@@ -65,8 +66,10 @@
 | `services/lyrics.py` | LRCLib-API-Provider |
 | `services/popularity.py` | Deezer-Ranking + `maybe_delete_unpopular` |
 | `services/tagging.py` | ID3v2-Tag-Writer (mutagen), `read_acoustid_score`, `_scale_cover` |
+| `services/collection_manager.py` | `is_same_version`, `is_better_version`, `should_exclude_as_live`, `pick_eviction_candidate` |
 | `services/file_utils.py` | `sanitize_filename`, `compute_file_path`, `safe_unlink` |
 | `domain/models.py` | `TrackInfo`, `EnrichedInfo`, `MusicBrainzData`, `FingerprintResult`, `ITunesTrackData` |
+| `infra/catalog.py` | `Catalog` ABC, `SqliteCatalog`, `read_tags_from_file`, `read_audio_from_file`, `ReconcileReport`, `SongRecord` |
 | `infra/http.py` | `AsyncHttpClient` ABC + `HttpxAsyncClient` + `download_image_or_none` |
 | `infra/config.py` | Pydantic `Settings` + `load_settings` |
 | `infra/errors.py` | `RadioRipperError` → `ConfigurationError` / `TaggingError` |
@@ -105,14 +108,14 @@
 | httpx statt aiohttp | Saubere Async-API, integrierter Connection-Pool |
 | Pydantic v2 für Config | Automatische Validierung, Aliase, Feld-Constraints |
 | Mutagen für ID3v2 | De-facto-Standard für Python-MP3-Tagging |
-| **Keine Persistenz** — Files-only | Single-User, kein State nötig; perfekt = `destination/`, sonst gelöscht |
+| **SQLite-Katalog-Index** — Dateisystem = Source-of-Truth | ISRC-basierte Duplikatserkennung, Eviction, Live/Bootleg-Ausschluss; Katalog ist nur durchsuchbarer Index |
 | **LRCLib statt lyrics.ovh** | Kein API-Key nötig, `plainLyrics` + `instrumental`-Flag, Free-Fallback `/api/search` |
 | **Ein Tag-Schreib-Durchgang** | Einzige öffentliche Methode `write_all`, atomic via `ID3.save` |
 | asyncio + `asyncio.gather` | Parallele API-Calls (iTunes + CAA + Deezer + LRCLib) |
 
 ## 9. Qualitätsanforderungen
 
-- **Testabdeckung:** ≥80% (Statement-Coverage); 175 Tests über `pytest --cov`
+- **Testabdeckung:** ≥80% (Statement-Coverage); ~200 Tests über `pytest --cov`
 - **Linting:** ruff (E, F, W, I, N, UP, B, SIM, ARG, RUF) — ersetzt flake8 + isort
 - **Typisierung:** mypy (relevante Regeln) auf `src/` + `tests/`; Pylance/`pyright` für IDE
 - **CI:** Lint → TypeCheck → Test (Python 3.11-3.13) → Docker-Build (main/master)

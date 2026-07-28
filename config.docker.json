@@ -1,4 +1,15 @@
 {
   "destination": "/app/recordings",
-  "work_dir": "/app/work"
+  "work_dir": "/app/work",
+  "mp3_inbox": "/app/recordings",
+  "acoustid_min_score": 0.90,
+  "min_popularity_rank": 100000,
+  "max_concurrent": 5,
+
+  "catalog_db": "/app/work/catalog.db",
+  "reconcile_on_startup": true,
+  "max_collection_size": 0,
+  "enable_eviction": false,
+  "exclude_release_group_types": ["Live", "Bootleg"],
+  "exclude_title_patterns": []
 }

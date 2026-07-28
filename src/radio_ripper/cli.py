@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from radio_ripper import __version__
+from radio_ripper.infra.catalog import SqliteCatalog
 from radio_ripper.infra.config import Settings, load_settings
 from radio_ripper.infra.errors import ConfigurationError
 from radio_ripper.infra.http import HttpxAsyncClient
@@ -65,6 +66,16 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
 
     deezer_provider = DeezerMetadataProvider(client, timeout=settings.cover_timeout)
 
+    catalog = SqliteCatalog(settings.catalog_db)
+    if settings.reconcile_on_startup:
+        logger.info("[Startup] Reconcile Katalog ⇄ Dateisystem ...")
+        report = await catalog.reconcile_with_filesystem(settings.destination)
+        logger.info(
+            "[Startup] Reconcile fertig: %d added, %d removed, %d kept (gesamt: %d, dauer: %.1fs)",
+            report.added, report.removed, report.kept,
+            report.added + report.kept, report.duration_s,
+        )
+
     proc = FileProcessor(
         inbox=inbox,
         temp_dir=settings.work_dir / "failed",
@@ -78,6 +89,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
         deezer_provider=deezer_provider,
         popularity_provider=popularity,
         lyrics_provider=lyrics_provider,
+        catalog=catalog,
         logger=logger,
     )
 
@@ -93,6 +105,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
         await stop_event.wait()
     finally:
         await proc.stop()
+        await catalog.aclose()
         await client.aclose()
     return 0
 

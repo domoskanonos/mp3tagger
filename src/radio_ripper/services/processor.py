@@ -18,7 +18,14 @@ from pathlib import Path
 from typing import Any
 
 from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, MusicBrainzData, TrackInfo
+from radio_ripper.infra.catalog import Catalog, SongRecord, read_audio_from_file
 from radio_ripper.infra.config import Settings
+from radio_ripper.services.collection_manager import (
+    is_better_version,
+    is_same_version,
+    pick_eviction_candidate,
+    should_exclude_as_live,
+)
 from radio_ripper.services.file_utils import compute_file_path, safe_unlink
 from radio_ripper.services.fingerprint import (
     FingerprintError,
@@ -208,6 +215,7 @@ class FileProcessor:
         deezer_provider: DeezerMetadataProvider | None = None,
         popularity_provider: PopularityProvider | None = None,
         lyrics_provider: LyricsProvider | None = None,
+        catalog: Catalog | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._inbox = inbox
@@ -225,6 +233,7 @@ class FileProcessor:
         self._deezer_provider = deezer_provider
         self._popularity = popularity_provider
         self._lyrics_provider = lyrics_provider
+        self._catalog = catalog
         self._semaphore = asyncio.Semaphore(settings.max_concurrent)
 
     # ── public lifecycle ──
@@ -404,17 +413,26 @@ class FileProcessor:
         await asyncio.gather(_fetch_itunes(), _fetch_lyr(), _fetch_art_img())
         return enriched, cover_from_enrich, artist_image, lyrics
 
-    def _compute_destination_and_score(
+    async def _compute_destination_and_score(
         self,
         result: FingerprintResult,
         track: TrackInfo,
         enriched: EnrichedInfo | None,
         work_path: Path,
+        *,
+        mb_data: MusicBrainzData | None = None,
     ) -> tuple[str, Path | None, Path | None]:
-        """Berechnet Zielpfad + Score-Vergleich mit bestehender Datei.
+        """Berechnet Zielpfad + Versions-Vergleich mit bestehenden Dateien.
 
         Returns (provenance, final_path, delete_old).
         delete_old ist None wenn keine alte Datei ersetzt wird.
+
+        Priorität:
+          1. Katalog-Abfrage via ``recording_id`` — falls gleiche Version
+             (gleiche MBID + gleiche ISRC) vorliegt, vergleiche Score/Bitrate
+             per :func:`is_better_version` und ersetze die schlechtere Datei.
+          2. Pfad-Kollision (gleicher Zielpfad) — Score-Vergleich via ID3
+             (Legacy-Verhalten, Fallback für Dateien ohne ISRC).
         """
         provenance = f"{self._name}/{self._name}"
         album = enriched.album if enriched and enriched.album else None
@@ -427,7 +445,44 @@ class FileProcessor:
         )
 
         delete_old: Path | None = None
-        if final_path.exists():
+
+        # ── Schritt 1: Katalog-basierter Versionsvergleich ──
+        if self._catalog is not None and result.recording_id:
+            existing_versions = await self._catalog.find_by_recording_id(result.recording_id)
+            new_isrc = mb_data.isrcs[0] if mb_data and mb_data.isrcs else None
+            for ev in existing_versions:
+                if not is_same_version(result.recording_id, new_isrc, ev.recording_id, ev.isrc):
+                    continue
+                if ev.file_path == str(final_path):
+                    continue  # wird über Pfad-Fallback behandelt
+                # Gleiche Version — Audioqualität vergleichen (neu ist noch unkatalogisiert,
+                # aber wir haben dessen Fingerprint-Score; Bitrate erst nach Tagging verfügbar).
+                if is_better_version(
+                    result.score, None, None,
+                    ev.acoustid_score, ev.bitrate, ev.sample_rate,
+                ):
+                    candidate = Path(ev.file_path)
+                    if candidate.exists():
+                        delete_old = candidate
+                        self._log.info(
+                            "[%s] Katalog-Treffer: ersetze %s (score=%.4f) durch bessere Version (%.4f)",
+                            self._name,
+                            candidate.name,
+                            ev.acoustid_score or 0.0,
+                            result.score,
+                        )
+                        break
+                # bestehende Version hat besseren Score → neue verwerfen
+                self._log.info(
+                    "[DELETE] %s — Grund: Katalog-Treffer mit gleicher/ besserer Version (score=%.4f >= %.4f)",
+                    work_path.name,
+                    ev.acoustid_score or 0.0,
+                    result.score,
+                )
+                return "", None, None
+
+        # ── Schritt 2: Pfad-Fallback (gleicher Zielpfad) ──
+        if final_path.exists() and delete_old is None:
             existing_score = read_acoustid_score(final_path)
             if existing_score is not None and existing_score >= result.score:
                 self._log.info(
@@ -526,12 +581,13 @@ class FileProcessor:
         stream_title = f"{result.artist} - {result.title}"
         track = TrackInfo.from_stream_title(stream_title)
 
-        # ── Phase 5: Zielpfad + Score-Entscheidung ──
-        provenance, final_path, delete_old = self._compute_destination_and_score(
+        # ── Phase 5: Zielpfad + Score-Entscheidung (Katalog-basiert + Pfad-Fallback) ──
+        provenance, final_path, delete_old = await self._compute_destination_and_score(
             result,
             track,
             enriched,
             work_path,
+            mb_data=mb_data,
         )
         if final_path is None:  # bestehende Datei hat besseren Score
             self._cleanup_file(work_path)
@@ -543,7 +599,23 @@ class FileProcessor:
             self._cleanup_file(work_path)
             return
 
-        # ── Phase 7: Popularitäts-Prüfung (nutzt deezer_data.rank, kein extra API-Call) ──
+        # ── Phase 7: Live-Ausschluss + Popularitäts-Prüfung (Deezer-Rank) ──
+        release_group_type = mb_data.release_group_type if mb_data else None
+        if should_exclude_as_live(
+            release_group_type,
+            result.title,
+            self._settings.exclude_release_group_types,
+            self._settings.exclude_title_patterns,
+        ):
+            self._log.info(
+                "[DELETE] %s — Grund: Live/Bootleg ausgeschlossen (rg_type=%s, title=%s)",
+                stage_path.name,
+                release_group_type,
+                result.title,
+            )
+            safe_unlink(stage_path)
+            return
+
         if self._settings.min_popularity_rank > 0 and (result.artist or result.title):
             if deezer_attempted and deezer_data is None:
                 # Deezer angerufen, 0 Treffer → "nicht auf Deezer" → löschen
@@ -635,6 +707,94 @@ class FileProcessor:
                 delete_old.name,
             )
             safe_unlink(delete_old, parents_root=self._settings.destination)
+            if self._catalog is not None:
+                await self._catalog.remove(str(delete_old))
+
+        # ── Phase 10: Katalog-Upsert + Eviction ──
+        if self._catalog is not None:
+            await self._catalog_upsert(
+                final_path, result, mb_data, enriched, deezer_data, has_cover=final_cover is not None,
+            )
+            await self._maybe_evict(deezer_data.rank if deezer_data else None)
+
+    async def _catalog_upsert(
+        self,
+        final_path: Path,
+        result: FingerprintResult,
+        mb_data: MusicBrainzData | None,
+        enriched: EnrichedInfo | None,
+        deezer_data: DeezerData | None,
+        *,
+        has_cover: bool,
+    ) -> None:
+        """Liest Audio-Eigenschaften nach dem Move und trägt das Lied im Katalog ein."""
+        assert self._catalog is not None
+        try:
+            audio = await asyncio.to_thread(read_audio_from_file, final_path)
+        except Exception:
+            self._log.debug("[%s] Audio-Lesen für Katalog fehlgeschlagen: %s", self._name, final_path)
+            audio = {"bitrate": None, "sample_rate": None, "duration_ms": None}
+        isrc = None
+        if deezer_data and deezer_data.isrc:
+            isrc = deezer_data.isrc
+        elif mb_data and mb_data.isrcs:
+            isrc = mb_data.isrcs[0]
+        rec = SongRecord(
+            file_path=str(final_path),
+            recording_id=result.recording_id,
+            isrc=isrc,
+            artist=result.artist,
+            title=result.title,
+            album=enriched.album if enriched else None,
+            release_group_type=mb_data.release_group_type if mb_data else None,
+            station_name=self._name,
+            file_size=final_path.stat().st_size if final_path.exists() else None,
+            bitrate=audio["bitrate"],
+            sample_rate=audio["sample_rate"],
+            duration_ms=audio["duration_ms"],
+            acoustid_score=result.score,
+            popularity_rank=deezer_data.rank if deezer_data else None,
+            has_cover=has_cover,
+        )
+        try:
+            await self._catalog.upsert(rec)
+        except Exception:
+            self._log.debug("[%s] Katalog-Upsert fehlgeschlagen: %s", self._name, final_path)
+
+    async def _maybe_evict(self, new_rank: int | None) -> None:
+        """Verdrängt das unpopulärste Lied, wenn das Sammlungslimit erreicht ist."""
+        if not self._catalog or not self._settings.enable_eviction:
+            return
+        if self._settings.max_collection_size <= 0 or new_rank is None:
+            return
+        try:
+            current = await self._catalog.count()
+        except Exception:
+            self._log.debug("[%s] Katalog-Count fehlgeschlagen", self._name)
+            return
+        if current < self._settings.max_collection_size:
+            return
+        try:
+            candidates = await self._catalog.find_least_popular(limit=20)
+        except Exception:
+            self._log.debug("[%s] find_least_popular fehlgeschlagen", self._name)
+            return
+        victim = pick_eviction_candidate(candidates, new_rank)
+        if victim is None:
+            return
+        victim_path = Path(victim.file_path)
+        self._log.info(
+            "[EVICT] %s — Grund: Rank %d < neuer Rank %d (Sammlung bei Limit %d)",
+            victim.file_path,
+            victim.popularity_rank,
+            new_rank,
+            self._settings.max_collection_size,
+        )
+        safe_unlink(victim_path, parents_root=self._settings.destination)
+        try:
+            await self._catalog.remove(victim.file_path)
+        except Exception:
+            self._log.debug("[%s] Katalog-Remove nach Eviction fehlgeschlagen", self._name)
 
 
 __all__ = ["FileProcessor"]

@@ -28,6 +28,20 @@ class Settings(BaseModel):
     enable_coverartarchive: bool = True
     max_concurrent: int = Field(default=3, ge=1, le=20)
 
+    # ── Collection-Management ───────────────────────────────────────────────
+    catalog_db: Path = Field(default=Path("./work/catalog.db"))
+    reconcile_on_startup: bool = True
+    max_collection_size: int = Field(default=0, ge=0,
+        description="0=disabled. >0 aktiviert Größenlimit + Eviction-Logik")
+    enable_eviction: bool = Field(default=False,
+        description="Verdränge unpopulärste Songs bei vollem Sammlungslimit")
+    exclude_release_group_types: list[str] = Field(
+        default_factory=lambda: ["Live", "Bootleg"],
+        description="MusicBrainz Release Group Types die sofort aussortiert werden")
+    exclude_title_patterns: list[str] = Field(
+        default_factory=list,
+        description="Case-insensitive Substrings, z.B. ['(live', 'live at', 'concert']")
+
     @field_validator("log_level")
     @classmethod
     def _valid_level(cls, v: str) -> str:
@@ -36,7 +50,7 @@ class Settings(BaseModel):
             raise ValueError(f"invalid log_level: {v}")
         return v
 
-    @field_validator("work_dir", "destination", "log_file", "mp3_inbox")
+    @field_validator("work_dir", "destination", "log_file", "mp3_inbox", "catalog_db")
     @classmethod
     def _expand(cls, v: Path | None) -> Path | None:
         return v.expanduser() if v is not None else None

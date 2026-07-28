@@ -43,6 +43,12 @@ Die Konfiguration erfolgt über eine JSON-Datei (siehe `config.json` / `config.d
 | `enable_coverartarchive` | bool | `true` | Cover Art Archive aktivieren |
 | `metadata_timeout` | float | `8.0` | iTunes-API-Timeout (Sekunden) |
 | `cover_timeout` | float | `15.0` | Cover-Download-Timeout (Sekunden) |
+| `catalog_db` | string | `./work/catalog.db` | Pfad zur SQLite-Katalogdatenbank |
+| `reconcile_on_startup` | bool | `true` | Katalog-⇄-Dateisystem-Abgleich beim Start |
+| `max_collection_size` | int | `0` | Max. Anzahl Songs in Sammlung (0 = deaktiviert) |
+| `enable_eviction` | bool | `false` | Eviction unwichtiger Songs bei Sammlungslimit |
+| `exclude_release_group_types` | list[string] | `["Live", "Bootleg"]` | Auszuschließende Release-Group-Types |
+| `exclude_title_patterns` | list[string] | `[]` | Regex-Muster für auszuschließende Titel |
 
 ### Umgebungsvariablen
 
@@ -86,9 +92,31 @@ Infrastructure Layer            Adapter implementieren Ports
   └── errors.py                RadioRipperError-Hierarchie
 ```
 
-**Kein Persistenz-Layer** — Files-only: perfect = `destination/`, Fehler = gelöscht.
+**SQLite-Katalog-Index** — Dateisystem bleibt Source-of-Truth, Catalog ist durchsuchbarer Index für Duplikatserkennung und Collection-Management.
 
 **Externe Dienste:** AcoustID, iTunes Search API, MusicBrainz, Cover Art Archive, Deezer, LRCLib
+
+---
+
+## Collection Management & Optimization
+
+Der **SQLite-Katalog** (`catalog.db`) trackt jeden importierten Song mit ISRC, MBID, AcoustID-Score, Bitrate, Sample-Rate und Deezer-Rank.
+
+### Duplikatserkennung (ISRC-basiert)
+
+Zwei Songs gelten als **gleiche Version** wenn sie denselben ISRC teilen. Bei Konflikt gewinnt: höherer AcoustID-Score → höhere Bitrate → höhere Sample-Rate.
+
+### Eviction
+
+Bei `enable_eviction: true` und `max_collection_size > 0` wird beim Import der Song mit dem niedrigsten Deezer-Rank gelöscht (`safe_unlink` + Katalog-Eintrag entfernt).
+
+### Live-/Bootleg-Ausschluss
+
+Songs deren Release-Group-Type in `exclude_release_group_types` (Default: `["Live", "Bootleg"]`) oder deren Titel auf `exclude_title_patterns` matched, werden sofort gelöscht.
+
+### Reconcile (Katalog ⇄ Dateisystem)
+
+Beim Start gleicht `reconcile_on_startup` die Katalog-Einträge mit dem Dateisystem ab: fehlende Dateien werden aus dem Katalog entfernt, nicht-katalogisierte Einträge werden hinzugefügt.
 
 ---
 
@@ -134,6 +162,9 @@ pre-commit run --all-files      # Alle Hooks
 | `services/lyrics.py` | `tests/services/test_lyrics.py` |
 | `services/popularity.py` | `tests/services/test_popularity.py` |
 | `services/tagging.py` | `tests/services/test_tagging.py` |
+| `services/collection_manager.py` | `tests/services/test_collection_manager.py` |
+| `services/processor.py` (Catalog) | `tests/services/test_processor_catalog.py` |
+| `infra/catalog.py` | `tests/infra/test_catalog.py` |
 
 ---
 

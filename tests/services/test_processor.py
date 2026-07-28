@@ -464,11 +464,11 @@ class TestEnrichParallel:
 
 
 class TestComputeDestinationAndScore:
-    def test_no_existing_file(self, tmp_path: Path):
+    async def test_no_existing_file(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
         result_fp = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        provenance, final_path, delete_old = proc._compute_destination_and_score(
+        provenance, final_path, delete_old = await proc._compute_destination_and_score(
             result_fp,
             track,
             None,
@@ -479,7 +479,7 @@ class TestComputeDestinationAndScore:
         assert final_path.parent == proc._settings.destination / "A"
         assert delete_old is None
 
-    def test_existing_better_score_returns_empty(self, tmp_path: Path):
+    async def test_existing_better_score_returns_empty(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
         result_fp = FingerprintResult(artist="A", title="T", score=0.5, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
@@ -492,7 +492,7 @@ class TestComputeDestinationAndScore:
         import radio_ripper.services.processor as proc_mod
 
         proc_mod.read_acoustid_score = lambda path: 0.9
-        provenance, final_path, delete_old = proc._compute_destination_and_score(
+        provenance, final_path, delete_old = await proc._compute_destination_and_score(
             result_fp,
             track,
             None,
@@ -502,7 +502,7 @@ class TestComputeDestinationAndScore:
         assert final_path is None
         assert delete_old is None
 
-    def test_existing_worse_score_returns_delete_old(self, tmp_path: Path):
+    async def test_existing_worse_score_returns_delete_old(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
         result_fp = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
@@ -513,7 +513,7 @@ class TestComputeDestinationAndScore:
         import radio_ripper.services.processor as proc_mod
 
         proc_mod.read_acoustid_score = lambda path: 0.5
-        provenance, final_path, delete_old = proc._compute_destination_and_score(
+        provenance, final_path, delete_old = await proc._compute_destination_and_score(
             result_fp,
             track,
             None,
