@@ -715,7 +715,7 @@ class FileProcessor:
             await self._catalog_upsert(
                 final_path, result, mb_data, enriched, deezer_data, has_cover=final_cover is not None,
             )
-            await self._maybe_evict(deezer_data.rank if deezer_data else None)
+            await self._maybe_evict(deezer_data.rank if deezer_data else None, final_path=final_path)
 
     async def _catalog_upsert(
         self,
@@ -761,11 +761,11 @@ class FileProcessor:
         except Exception:
             self._log.debug("[%s] Katalog-Upsert fehlgeschlagen: %s", self._name, final_path)
 
-    async def _maybe_evict(self, new_rank: int | None) -> None:
+    async def _maybe_evict(self, new_rank: int | None, *, final_path: Path) -> None:
         """Verdrängt das unpopulärste Lied, wenn das Sammlungslimit erreicht ist."""
         if not self._catalog or not self._settings.enable_eviction:
             return
-        if self._settings.max_collection_size <= 0 or new_rank is None:
+        if self._settings.max_collection_size <= 0:
             return
         try:
             current = await self._catalog.count()
@@ -779,12 +779,21 @@ class FileProcessor:
         except Exception:
             self._log.debug("[%s] find_least_popular fehlgeschlagen", self._name)
             return
-        victim = pick_eviction_candidate(candidates, new_rank)
+
+        # Primär: Song verdrängen, der weniger populär ist als der neue
+        victim = pick_eviction_candidate(candidates, new_rank) if new_rank is not None else None
+        # Fallback: absolut unpopulärsten Song verdrängen (neuen ausschließen)
+        if victim is None:
+            candidates.sort(key=lambda r: r.popularity_rank if r.popularity_rank is not None else 2**31 - 1)
+            for c in candidates:
+                if c.file_path != str(final_path):
+                    victim = c
+                    break
         if victim is None:
             return
         victim_path = Path(victim.file_path)
         self._log.info(
-            "[EVICT] %s — Grund: Rank %d < neuer Rank %d (Sammlung bei Limit %d)",
+            "[EVICT] %s — Grund: Rank %s < neuer Rank %s (Sammlung bei Limit %d)",
             victim.file_path,
             victim.popularity_rank,
             new_rank,

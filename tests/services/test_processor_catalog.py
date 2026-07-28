@@ -163,7 +163,7 @@ class TestEviction:
                 popularity_rank=i * 100 + 100,
             ))
         with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
-            await proc._maybe_evict(new_rank=100)
+            await proc._maybe_evict(new_rank=100, final_path=tmp_path / "x.mp3")
             mock_unlink.assert_not_called()
 
     async def test_evict_when_over_limit(self, tmp_path: Path, catalog: SqliteCatalog):
@@ -186,13 +186,14 @@ class TestEviction:
             p.write_bytes(b"\xff\xfb\x00")
         # Patch: Dateisystem-Zugriff auf tmp_path
         proc._settings = proc._settings.model_copy(update={"destination": tmp_path / "out"})
+        final_path = tmp_path / "new.mp3"
 
         with (
             patch("radio_ripper.services.processor.safe_unlink") as mock_unlink,
             patch.object(catalog, "find_least_popular", new=AsyncMock(return_value=songs)),
             patch.object(catalog, "remove", new=AsyncMock()),
         ):
-            await proc._maybe_evict(new_rank=1000)
+            await proc._maybe_evict(new_rank=1000, final_path=final_path)
         # sollte jemand mit niedrigstem Rank (100) evicted haben
         mock_unlink.assert_called_once()
         evicted = mock_unlink.call_args[0][0]
@@ -209,7 +210,7 @@ class TestEviction:
                 popularity_rank=100 + i,
             ))
         with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
-            await proc._maybe_evict(new_rank=1000)
+            await proc._maybe_evict(new_rank=1000, final_path=tmp_path / "x.mp3")
             mock_unlink.assert_not_called()
 
     async def test_evict_disabled_when_max_size_zero(self, tmp_path: Path, catalog: SqliteCatalog):
@@ -218,32 +219,58 @@ class TestEviction:
             max_collection_size=0, enable_eviction=True,
         )
         with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
-            await proc._maybe_evict(new_rank=1000)
+            await proc._maybe_evict(new_rank=1000, final_path=tmp_path / "x.mp3")
             mock_unlink.assert_not_called()
 
-    async def test_evict_returns_none_when_no_lower_rank(self, tmp_path: Path, catalog: SqliteCatalog):
+    async def test_evict_fallback_when_no_rank_qualifies(self, tmp_path: Path, catalog: SqliteCatalog):
+        """Wenn kein Song weniger populär als der neue ist, wird der absolut
+        unpopulärste verdrängt — Sammlungslimit bleibt gewahrt."""
         proc = _make_processor(
             tmp_path, catalog=catalog,
             max_collection_size=2, enable_eviction=True,
         )
-        # Alle Ranks > new_rank
         for i in range(2):
             await catalog.upsert(SongRecord(
                 file_path=f"/out/{i}.mp3", artist=f"A{i}", title=f"T{i}",
                 popularity_rank=1000 + i,
             ))
-        with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
-            await proc._maybe_evict(new_rank=500)
-            mock_unlink.assert_not_called()
+            p = tmp_path / "out" / f"{i}.mp3"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"\xff\xfb\x00")
+        proc._settings = proc._settings.model_copy(update={"destination": tmp_path / "out"})
+        final_path = tmp_path / "new.mp3"
 
-    async def test_evict_returns_none_when_new_rank_none(self, tmp_path: Path, catalog: SqliteCatalog):
+        with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
+            await proc._maybe_evict(new_rank=500, final_path=final_path)
+        mock_unlink.assert_called_once()
+        evicted = mock_unlink.call_args[0][0]
+        assert "0.mp3" in str(evicted)
+
+    async def test_evict_fallback_when_new_rank_none(self, tmp_path: Path, catalog: SqliteCatalog):
+        """Auch ohne Deezer-Rank wird der unpopulärste Song verdrängt."""
         proc = _make_processor(
             tmp_path, catalog=catalog,
             max_collection_size=2, enable_eviction=True,
         )
+        await catalog.upsert(SongRecord(
+            file_path="/out/low.mp3", artist="A", title="T",
+            popularity_rank=100,
+        ))
+        (tmp_path / "out" / "low.mp3").parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "out" / "low.mp3").write_bytes(b"\xff\xfb\x00")
+        await catalog.upsert(SongRecord(
+            file_path="/out/high.mp3", artist="B", title="T",
+            popularity_rank=999,
+        ))
+        (tmp_path / "out" / "high.mp3").write_bytes(b"\xff\xfb\x00")
+        proc._settings = proc._settings.model_copy(update={"destination": tmp_path / "out"})
+        final_path = tmp_path / "new.mp3"
+
         with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
-            await proc._maybe_evict(new_rank=None)
-            mock_unlink.assert_not_called()
+            await proc._maybe_evict(new_rank=None, final_path=final_path)
+        mock_unlink.assert_called_once()
+        evicted = mock_unlink.call_args[0][0]
+        assert "low.mp3" in str(evicted)  # absolut unpopulärster
 
 
 class TestCatalogUpsert:
