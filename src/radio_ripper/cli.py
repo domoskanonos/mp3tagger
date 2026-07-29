@@ -114,8 +114,11 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
         report = await catalog.reconcile_with_filesystem(settings.destination)
         logger.info(
             "[Startup] Reconcile fertig: %d added, %d removed, %d kept (gesamt: %d, dauer: %.1fs)",
-            report.added, report.removed, report.kept,
-            report.added + report.kept, report.duration_s,
+            report.added,
+            report.removed,
+            report.kept,
+            report.added + report.kept,
+            report.duration_s,
         )
 
     proc = FileProcessor(
@@ -144,9 +147,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
 
     watch_task: asyncio.Task[None] | None = None
     if cfg_path:
-        watch_task = asyncio.create_task(
-            _watch_config(cfg_path, proc, logger, settings.log_level)
-        )
+        watch_task = asyncio.create_task(_watch_config(cfg_path, proc, logger, settings.log_level))
 
     await proc.start()
     try:

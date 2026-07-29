@@ -30,8 +30,7 @@ class TestCli:
     def test_auto_discover_config_json(self, tmp_path: Path):
         cfg = tmp_path / "config.json"
         cfg.write_text('{"destination":"' + str(tmp_path / "rec") + '"}')
-        with patch("radio_ripper.cli.Path.cwd", return_value=tmp_path), \
-             patch("radio_ripper.cli._run_pipeline") as mock:
+        with patch("radio_ripper.cli.Path.cwd", return_value=tmp_path), patch("radio_ripper.cli._run_pipeline") as mock:
             main([])
         mock.assert_called_once()
 

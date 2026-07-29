@@ -461,8 +461,12 @@ class FileProcessor:
                 # Gleiche Version — Audioqualität vergleichen (neu ist noch unkatalogisiert,
                 # aber wir haben dessen Fingerprint-Score; Bitrate erst nach Tagging verfügbar).
                 if is_better_version(
-                    result.score, None, None,
-                    ev.acoustid_score, ev.bitrate, ev.sample_rate,
+                    result.score,
+                    None,
+                    None,
+                    ev.acoustid_score,
+                    ev.bitrate,
+                    ev.sample_rate,
                 ):
                     candidate = Path(ev.file_path)
                     if candidate.exists():
@@ -716,7 +720,12 @@ class FileProcessor:
         # ── Phase 10: Katalog-Upsert + Eviction ──
         if self._catalog is not None:
             await self._catalog_upsert(
-                final_path, result, mb_data, enriched, deezer_data, has_cover=final_cover is not None,
+                final_path,
+                result,
+                mb_data,
+                enriched,
+                deezer_data,
+                has_cover=final_cover is not None,
             )
             await self._maybe_evict(deezer_data.rank if deezer_data else None, final_path=final_path)
 

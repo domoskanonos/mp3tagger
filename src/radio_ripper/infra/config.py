@@ -31,16 +31,17 @@ class Settings(BaseModel):
     # ── Collection-Management ───────────────────────────────────────────────
     catalog_db: Path = Field(default=Path("./work/catalog.db"))
     reconcile_on_startup: bool = True
-    max_collection_size: int = Field(default=0, ge=0,
-        description="0=disabled. >0 aktiviert Größenlimit + Eviction-Logik")
-    enable_eviction: bool = Field(default=False,
-        description="Verdränge unpopulärste Songs bei vollem Sammlungslimit")
+    max_collection_size: int = Field(
+        default=0, ge=0, description="0=disabled. >0 aktiviert Größenlimit + Eviction-Logik"
+    )
+    enable_eviction: bool = Field(default=False, description="Verdränge unpopulärste Songs bei vollem Sammlungslimit")
     exclude_release_group_types: list[str] = Field(
         default_factory=lambda: ["Live", "Bootleg"],
-        description="MusicBrainz Release Group Types die sofort aussortiert werden")
+        description="MusicBrainz Release Group Types die sofort aussortiert werden",
+    )
     exclude_title_patterns: list[str] = Field(
-        default_factory=list,
-        description="Case-insensitive Substrings, z.B. ['(live', 'live at', 'concert']")
+        default_factory=list, description="Case-insensitive Substrings, z.B. ['(live', 'live at', 'concert']"
+    )
 
     @field_validator("log_level")
     @classmethod

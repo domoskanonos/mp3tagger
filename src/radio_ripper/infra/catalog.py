@@ -43,8 +43,8 @@ class SongRecord:
     release_group_type: str | None = None
     station_name: str | None = None
     file_size: int | None = None
-    bitrate: int | None = None          # kbps
-    sample_rate: int | None = None       # Hz
+    bitrate: int | None = None  # kbps
+    sample_rate: int | None = None  # Hz
     duration_ms: int | None = None
     acoustid_score: float | None = None
     popularity_rank: int | None = None
@@ -55,9 +55,9 @@ class SongRecord:
 class ReconcileReport:
     """Ergebnis eines Reconcile-Laufs."""
 
-    added: int = 0        # in DB neu aufgenommen
-    removed: int = 0      # verwaiste DB-Einträge gelöscht
-    kept: int = 0         # bereits in DB, unverändert
+    added: int = 0  # in DB neu aufgenommen
+    removed: int = 0  # verwaiste DB-Einträge gelöscht
+    kept: int = 0  # bereits in DB, unverändert
     duration_s: float = 0.0
     errors: list[str] = field(default_factory=list)
 
@@ -69,12 +69,10 @@ class Catalog(ABC):
     """Persistence-Port — Index über die MP3-Sammlung."""
 
     @abstractmethod
-    async def upsert(self, rec: SongRecord) -> None:
-        ...
+    async def upsert(self, rec: SongRecord) -> None: ...
 
     @abstractmethod
-    async def find_by_recording_id(self, recording_id: str) -> list[SongRecord]:
-        ...
+    async def find_by_recording_id(self, recording_id: str) -> list[SongRecord]: ...
 
     @abstractmethod
     async def find_duplicate_versions(self) -> list[list[SongRecord]]:
@@ -82,34 +80,25 @@ class Catalog(ABC):
         ...
 
     @abstractmethod
-    async def find_least_popular(self, limit: int = 20) -> list[SongRecord]:
-        ...
+    async def find_least_popular(self, limit: int = 20) -> list[SongRecord]: ...
 
     @abstractmethod
-    async def count(self) -> int:
-        ...
+    async def count(self) -> int: ...
 
     @abstractmethod
-    async def exists_by_path(self, file_path: str) -> bool:
-        ...
+    async def exists_by_path(self, file_path: str) -> bool: ...
 
     @abstractmethod
-    async def remove(self, file_path: str) -> None:
-        ...
+    async def remove(self, file_path: str) -> None: ...
 
     @abstractmethod
-    async def list_all(self) -> list[SongRecord]:
-        ...
+    async def list_all(self) -> list[SongRecord]: ...
 
     @abstractmethod
-    async def reconcile_with_filesystem(
-        self, destination: Path, *, concurrency: int = 10
-    ) -> ReconcileReport:
-        ...
+    async def reconcile_with_filesystem(self, destination: Path, *, concurrency: int = 10) -> ReconcileReport: ...
 
     @abstractmethod
-    async def aclose(self) -> None:
-        ...
+    async def aclose(self) -> None: ...
 
 
 # ── SQLite-Implementation ───────────────────────────────────────────────────
@@ -195,15 +184,25 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
         tags = ID3(path)
     except ID3NoHeaderError:
         return {
-            "recording_id": None, "isrc": None, "release_group_type": None,
-            "artist": None, "title": None, "album": None,
-            "acoustid_score": None, "has_cover": False,
+            "recording_id": None,
+            "isrc": None,
+            "release_group_type": None,
+            "artist": None,
+            "title": None,
+            "album": None,
+            "acoustid_score": None,
+            "has_cover": False,
         }
     except Exception:
         return {
-            "recording_id": None, "isrc": None, "release_group_type": None,
-            "artist": None, "title": None, "album": None,
-            "acoustid_score": None, "has_cover": False,
+            "recording_id": None,
+            "isrc": None,
+            "release_group_type": None,
+            "artist": None,
+            "title": None,
+            "album": None,
+            "acoustid_score": None,
+            "has_cover": False,
         }
 
     artist = title = album = None
@@ -324,10 +323,21 @@ class SqliteCatalog(Catalog):
                 updated_at=datetime('now')
             """,
             (
-                rec.recording_id, rec.isrc, rec.artist, rec.title, rec.album,
-                rec.release_group_type, rec.station_name, rec.file_path, rec.file_size,
-                rec.bitrate, rec.sample_rate, rec.duration_ms,
-                rec.acoustid_score, rec.popularity_rank, 1 if rec.has_cover else 0,
+                rec.recording_id,
+                rec.isrc,
+                rec.artist,
+                rec.title,
+                rec.album,
+                rec.release_group_type,
+                rec.station_name,
+                rec.file_path,
+                rec.file_size,
+                rec.bitrate,
+                rec.sample_rate,
+                rec.duration_ms,
+                rec.acoustid_score,
+                rec.popularity_rank,
+                1 if rec.has_cover else 0,
             ),
         )
 
@@ -379,8 +389,7 @@ class SqliteCatalog(Catalog):
 
     def _find_least_popular_sync(self, limit: int) -> list[SongRecord]:
         cur = self._conn.execute(
-            "SELECT * FROM songs WHERE popularity_rank IS NOT NULL "
-            "ORDER BY popularity_rank ASC LIMIT ?",
+            "SELECT * FROM songs WHERE popularity_rank IS NOT NULL ORDER BY popularity_rank ASC LIMIT ?",
             (limit,),
         )
         return [_row_to_record(r) for r in cur.fetchall()]
@@ -418,15 +427,14 @@ class SqliteCatalog(Catalog):
 
     # ── reconcile ──────────────────────────────────────────────────────────
 
-    async def reconcile_with_filesystem(
-        self, destination: Path, *, concurrency: int = 10
-    ) -> ReconcileReport:
+    async def reconcile_with_filesystem(self, destination: Path, *, concurrency: int = 10) -> ReconcileReport:
         """Synchronisiert DB ⇄ Dateisystem einmalig.
 
         1. Alle DB-Zeilen laden; verwaiste Einträge (File fehlt) löschen.
         2. ``destination/`` rekursiv scannen; neue MP3s indizieren.
         """
         import time
+
         start = time.monotonic()
         report = ReconcileReport()
 
@@ -443,9 +451,7 @@ class SqliteCatalog(Catalog):
                 _LOGGER.debug("[Reconcile] entfernt verwaisten DB-Eintrag: %s", row.file_path)
 
         # Schritt 2: neue Dateien indizieren
-        mp3_files: list[Path] = [
-            p for p in destination.rglob("*.mp3") if str(p) not in known_paths
-        ]
+        mp3_files: list[Path] = [p for p in destination.rglob("*.mp3") if str(p) not in known_paths]
 
         sem = asyncio.Semaphore(concurrency)
 
@@ -467,8 +473,12 @@ class SqliteCatalog(Catalog):
         report.duration_s = time.monotonic() - start
         _LOGGER.info(
             "[Reconcile] %d added, %d removed, %d kept (gesamt: %d, dauer: %.1fs, fehler: %d)",
-            report.added, report.removed, report.kept,
-            report.added + report.kept, report.duration_s, len(report.errors),
+            report.added,
+            report.removed,
+            report.kept,
+            report.added + report.kept,
+            report.duration_s,
+            len(report.errors),
         )
         return report
 

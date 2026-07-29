@@ -42,10 +42,7 @@ class DeezerData:
 
 class DeezerProvider(ABC):
     @abstractmethod
-    async def fetch(
-        self, artist: str, title: str, *, fetch_album_detail: bool = True
-    ) -> DeezerData | None:
-        ...
+    async def fetch(self, artist: str, title: str, *, fetch_album_detail: bool = True) -> DeezerData | None: ...
 
 
 class DeezerMetadataProvider(DeezerProvider):
@@ -55,9 +52,7 @@ class DeezerMetadataProvider(DeezerProvider):
         self._client = client
         self._timeout = timeout
 
-    async def fetch(
-        self, artist: str, title: str, *, fetch_album_detail: bool = True
-    ) -> DeezerData | None:
+    async def fetch(self, artist: str, title: str, *, fetch_album_detail: bool = True) -> DeezerData | None:
         query = f"{artist} {title}".strip()
         if not query:
             return None
@@ -76,15 +71,9 @@ class DeezerMetadataProvider(DeezerProvider):
         track = tracks[0]
         album_data = track.get("album") or {}
 
-        cover_url = (
-            album_data.get("cover_xl")
-            or album_data.get("cover_big")
-            or album_data.get("cover_medium")
-        )
+        cover_url = album_data.get("cover_xl") or album_data.get("cover_big") or album_data.get("cover_medium")
         cover_bytes = (
-            await download_image_or_none(self._client, str(cover_url), timeout=self._timeout)
-            if cover_url
-            else None
+            await download_image_or_none(self._client, str(cover_url), timeout=self._timeout) if cover_url else None
         )
 
         result = DeezerData(

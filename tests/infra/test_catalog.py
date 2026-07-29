@@ -30,9 +30,15 @@ def _make_record(
     popularity_rank: int | None = 50000,
 ) -> SongRecord:
     return SongRecord(
-        file_path=file_path, recording_id=recording_id, isrc=isrc,
-        artist=artist, title=title, bitrate=bitrate, sample_rate=sample_rate,
-        duration_ms=duration_ms, acoustid_score=acoustid_score,
+        file_path=file_path,
+        recording_id=recording_id,
+        isrc=isrc,
+        artist=artist,
+        title=title,
+        bitrate=bitrate,
+        sample_rate=sample_rate,
+        duration_ms=duration_ms,
+        acoustid_score=acoustid_score,
         popularity_rank=popularity_rank,
     )
 
@@ -224,15 +230,28 @@ class TestReconcile:
         f.write_bytes(b"")
         # Stubs: read_tags_from_file + read_audio_from_file liefern deterministische Werte
         with (
-            patch("radio_ripper.infra.catalog.read_tags_from_file", return_value={
-                "recording_id": "mbid-1", "isrc": "ISRC1",
-                "release_group_type": "Album", "artist": "Artist", "title": "Song",
-                "album": None, "acoustid_score": 0.9, "popularity_rank": 12345,
-                "has_cover": True,
-            }),
-            patch("radio_ripper.infra.catalog.read_audio_from_file", return_value={
-                "bitrate": 320, "sample_rate": 44100, "duration_ms": 200000,
-            }),
+            patch(
+                "radio_ripper.infra.catalog.read_tags_from_file",
+                return_value={
+                    "recording_id": "mbid-1",
+                    "isrc": "ISRC1",
+                    "release_group_type": "Album",
+                    "artist": "Artist",
+                    "title": "Song",
+                    "album": None,
+                    "acoustid_score": 0.9,
+                    "popularity_rank": 12345,
+                    "has_cover": True,
+                },
+            ),
+            patch(
+                "radio_ripper.infra.catalog.read_audio_from_file",
+                return_value={
+                    "bitrate": 320,
+                    "sample_rate": 44100,
+                    "duration_ms": 200000,
+                },
+            ),
         ):
             report = await catalog.reconcile_with_filesystem(dest)
         assert report.added == 1

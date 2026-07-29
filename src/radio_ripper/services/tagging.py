@@ -423,8 +423,11 @@ class ID3Tagger(TrackTagger):
             for tag_key, mbs, desc in (
                 ("TXXX:MusicBrainz Release Title", mb_data.release_title, "MusicBrainz Release Title"),
                 ("TXXX:MusicBrainz Release Date", mb_data.release_date, "MusicBrainz Release Date"),
-                ("TXXX:MusicBrainz Album Release Country",
-                 mb_data.release_country, "MusicBrainz Album Release Country"),
+                (
+                    "TXXX:MusicBrainz Album Release Country",
+                    mb_data.release_country,
+                    "MusicBrainz Album Release Country",
+                ),
                 ("TXXX:MusicBrainz Release Id", mb_data.release_id, "MusicBrainz Release Id"),
                 ("TXXX:MusicBrainz Release Group Type", mb_data.release_group_type, "MusicBrainz Release Group Type"),
                 ("TXXX:CatalogNumber", mb_data.release_catalog_no, "CatalogNumber"),

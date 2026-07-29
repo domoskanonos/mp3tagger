@@ -1,8 +1,8 @@
 """Tests für die Processor-Integration des Catalog:
-   - Catalog-basierten Versionsvergleich
-   - Live-Ausschluss
-   - Eviction (Simulation)
-   - Katalog-Upsert nach Pipeline-Abschluss
+- Catalog-basierten Versionsvergleich
+- Live-Ausschluss
+- Eviction (Simulation)
+- Katalog-Upsert nach Pipeline-Abschluss
 """
 
 from __future__ import annotations
@@ -74,19 +74,29 @@ class TestCatalogVersionReplace:
         old_path = tmp_path / "out" / "A" / "OldAlbum" / "A - T.mp3"
         old_path.parent.mkdir(parents=True)
         old_path.write_bytes(b"\xff\xfb\x00\x00")
-        await catalog.upsert(SongRecord(
-            file_path=str(old_path),
-            recording_id="r1", isrc="ISRC1",
-            artist="A", title="T",
-            acoustid_score=0.85, bitrate=192, sample_rate=44100,
-            popularity_rank=50000,
-        ))
+        await catalog.upsert(
+            SongRecord(
+                file_path=str(old_path),
+                recording_id="r1",
+                isrc="ISRC1",
+                artist="A",
+                title="T",
+                acoustid_score=0.85,
+                bitrate=192,
+                sample_rate=44100,
+                popularity_rank=50000,
+            )
+        )
         proc = _make_processor(tmp_path, catalog=catalog)
         result = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         mb_data = MusicBrainzData(recording_id="r1", isrcs=("ISRC1",))
         _, final_path, delete_old = await proc._compute_destination_and_score(
-            result, track, None, tmp_path / "work.mp3", mb_data=mb_data,
+            result,
+            track,
+            None,
+            tmp_path / "work.mp3",
+            mb_data=mb_data,
         )
         assert delete_old is not None and Path(delete_old) == old_path
         assert final_path is not None
@@ -96,19 +106,30 @@ class TestCatalogVersionReplace:
         old_path = tmp_path / "out" / "A" / "OldAlbum" / "A - T.mp3"
         old_path.parent.mkdir(parents=True)
         old_path.write_bytes(b"\xff\xfb\x00")
-        await catalog.upsert(SongRecord(
-            file_path=str(old_path),
-            recording_id="r1", isrc="ISRC1", artist="A", title="T",
-            acoustid_score=0.95, bitrate=320, sample_rate=44100,
-            popularity_rank=50000,
-        ))
+        await catalog.upsert(
+            SongRecord(
+                file_path=str(old_path),
+                recording_id="r1",
+                isrc="ISRC1",
+                artist="A",
+                title="T",
+                acoustid_score=0.95,
+                bitrate=320,
+                sample_rate=44100,
+                popularity_rank=50000,
+            )
+        )
         proc = _make_processor(tmp_path, catalog=catalog)
         # Neue Version: schlechterer Score (gleiche MBID + ISRC → same version)
         result = FingerprintResult(artist="A", title="T", score=0.80, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         mb_data = MusicBrainzData(recording_id="r1", isrcs=("ISRC1",))
         provenance, final_path, _ = await proc._compute_destination_and_score(
-            result, track, None, tmp_path / "work.mp3", mb_data=mb_data,
+            result,
+            track,
+            None,
+            tmp_path / "work.mp3",
+            mb_data=mb_data,
         )
         # Katalog entscheidet: bestehende ist besser → neue verwerfen
         assert provenance == "" and final_path is None
@@ -118,18 +139,29 @@ class TestCatalogVersionReplace:
         old_path = tmp_path / "out" / "A" / "OldAlbum" / "A - T.mp3"
         old_path.parent.mkdir(parents=True)
         old_path.write_bytes(b"\xff\xfb\x00")
-        await catalog.upsert(SongRecord(
-            file_path=str(old_path),
-            recording_id="r1", isrc=None, artist="A", title="T",
-            acoustid_score=0.95, bitrate=320, sample_rate=44100,
-        ))
+        await catalog.upsert(
+            SongRecord(
+                file_path=str(old_path),
+                recording_id="r1",
+                isrc=None,
+                artist="A",
+                title="T",
+                acoustid_score=0.95,
+                bitrate=320,
+                sample_rate=44100,
+            )
+        )
         proc = _make_processor(tmp_path, catalog=catalog)
         result = FingerprintResult(artist="A", title="T", score=0.80, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
         mb_data = MusicBrainzData(recording_id="r1", isrcs=())  # keine ISRC
         # final_path existiert nicht → kein Pfad-Fallback → keine Ersetzung, beide bleiben
         provenance, final_path, _ = await proc._compute_destination_and_score(
-            result, track, None, tmp_path / "work.mp3", mb_data=mb_data,
+            result,
+            track,
+            None,
+            tmp_path / "work.mp3",
+            mb_data=mb_data,
         )
         assert provenance == "tag/tag"
         assert final_path is not None
@@ -140,10 +172,12 @@ class TestLiveExclusion:
 
     async def test_live_album_rejected(self):
         from radio_ripper.services.collection_manager import should_exclude_as_live
+
         assert should_exclude_as_live("Live", "T", ["Live", "Bootleg"], [])
 
     async def test_album_passes(self, tmp_path: Path, catalog: SqliteCatalog):
         from radio_ripper.services.collection_manager import should_exclude_as_live
+
         assert not should_exclude_as_live("Album", "T", ["Live", "Bootleg"], [])
 
 
@@ -152,24 +186,31 @@ class TestEviction:
 
     async def test_no_evict_under_limit(self, tmp_path: Path, catalog: SqliteCatalog):
         proc = _make_processor(
-            tmp_path, catalog=catalog,
-            max_collection_size=100, enable_eviction=True,
+            tmp_path,
+            catalog=catalog,
+            max_collection_size=100,
+            enable_eviction=True,
         )
         # 5 Songs im Katalog
         for i in range(5):
-            await catalog.upsert(SongRecord(
-                file_path=f"/out/{i}.mp3",
-                artist=f"A{i}", title=f"T{i}",
-                popularity_rank=i * 100 + 100,
-            ))
+            await catalog.upsert(
+                SongRecord(
+                    file_path=f"/out/{i}.mp3",
+                    artist=f"A{i}",
+                    title=f"T{i}",
+                    popularity_rank=i * 100 + 100,
+                )
+            )
         with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
             await proc._maybe_evict(new_rank=100, final_path=tmp_path / "x.mp3")
             mock_unlink.assert_not_called()
 
     async def test_evict_when_over_limit(self, tmp_path: Path, catalog: SqliteCatalog):
         proc = _make_processor(
-            tmp_path, catalog=catalog,
-            max_collection_size=3, enable_eviction=True,
+            tmp_path,
+            catalog=catalog,
+            max_collection_size=3,
+            enable_eviction=True,
         )
         # 3 Songs, Ranks 100, 500, 999
         songs = [
@@ -201,22 +242,30 @@ class TestEviction:
 
     async def test_evict_disabled_when_eviction_false(self, tmp_path: Path, catalog: SqliteCatalog):
         proc = _make_processor(
-            tmp_path, catalog=catalog,
-            max_collection_size=2, enable_eviction=False,  # deaktiviert
+            tmp_path,
+            catalog=catalog,
+            max_collection_size=2,
+            enable_eviction=False,  # deaktiviert
         )
         for i in range(3):
-            await catalog.upsert(SongRecord(
-                file_path=f"/out/{i}.mp3", artist=f"A{i}", title=f"T{i}",
-                popularity_rank=100 + i,
-            ))
+            await catalog.upsert(
+                SongRecord(
+                    file_path=f"/out/{i}.mp3",
+                    artist=f"A{i}",
+                    title=f"T{i}",
+                    popularity_rank=100 + i,
+                )
+            )
         with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
             await proc._maybe_evict(new_rank=1000, final_path=tmp_path / "x.mp3")
             mock_unlink.assert_not_called()
 
     async def test_evict_disabled_when_max_size_zero(self, tmp_path: Path, catalog: SqliteCatalog):
         proc = _make_processor(
-            tmp_path, catalog=catalog,
-            max_collection_size=0, enable_eviction=True,
+            tmp_path,
+            catalog=catalog,
+            max_collection_size=0,
+            enable_eviction=True,
         )
         with patch("radio_ripper.services.processor.safe_unlink") as mock_unlink:
             await proc._maybe_evict(new_rank=1000, final_path=tmp_path / "x.mp3")
@@ -226,14 +275,20 @@ class TestEviction:
         """Wenn kein Song weniger populär als der neue ist, wird der absolut
         unpopulärste verdrängt — Sammlungslimit bleibt gewahrt."""
         proc = _make_processor(
-            tmp_path, catalog=catalog,
-            max_collection_size=2, enable_eviction=True,
+            tmp_path,
+            catalog=catalog,
+            max_collection_size=2,
+            enable_eviction=True,
         )
         for i in range(2):
-            await catalog.upsert(SongRecord(
-                file_path=f"/out/{i}.mp3", artist=f"A{i}", title=f"T{i}",
-                popularity_rank=1000 + i,
-            ))
+            await catalog.upsert(
+                SongRecord(
+                    file_path=f"/out/{i}.mp3",
+                    artist=f"A{i}",
+                    title=f"T{i}",
+                    popularity_rank=1000 + i,
+                )
+            )
             p = tmp_path / "out" / f"{i}.mp3"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(b"\xff\xfb\x00")
@@ -249,19 +304,29 @@ class TestEviction:
     async def test_evict_fallback_when_new_rank_none(self, tmp_path: Path, catalog: SqliteCatalog):
         """Auch ohne Deezer-Rank wird der unpopulärste Song verdrängt."""
         proc = _make_processor(
-            tmp_path, catalog=catalog,
-            max_collection_size=2, enable_eviction=True,
+            tmp_path,
+            catalog=catalog,
+            max_collection_size=2,
+            enable_eviction=True,
         )
-        await catalog.upsert(SongRecord(
-            file_path="/out/low.mp3", artist="A", title="T",
-            popularity_rank=100,
-        ))
+        await catalog.upsert(
+            SongRecord(
+                file_path="/out/low.mp3",
+                artist="A",
+                title="T",
+                popularity_rank=100,
+            )
+        )
         (tmp_path / "out" / "low.mp3").parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / "out" / "low.mp3").write_bytes(b"\xff\xfb\x00")
-        await catalog.upsert(SongRecord(
-            file_path="/out/high.mp3", artist="B", title="T",
-            popularity_rank=999,
-        ))
+        await catalog.upsert(
+            SongRecord(
+                file_path="/out/high.mp3",
+                artist="B",
+                title="T",
+                popularity_rank=999,
+            )
+        )
         (tmp_path / "out" / "high.mp3").write_bytes(b"\xff\xfb\x00")
         proc._settings = proc._settings.model_copy(update={"destination": tmp_path / "out"})
         final_path = tmp_path / "new.mp3"
@@ -286,8 +351,10 @@ class TestCatalogUpsert:
         mb_data = MusicBrainzData(recording_id="r1", isrcs=("ISRC1",))
         enriched = EnrichedInfo(artist="A", title="T", album="MyAlbum")
         deezer = DeezerData(rank=50000, isrc="ISRC1", cover_bytes=None, album="MyAlbum")
-        with patch("radio_ripper.services.processor.read_audio_from_file",
-                   return_value={"bitrate": 320, "sample_rate": 44100, "duration_ms": 200000}):
+        with patch(
+            "radio_ripper.services.processor.read_audio_from_file",
+            return_value={"bitrate": 320, "sample_rate": 44100, "duration_ms": 200000},
+        ):
             await proc._catalog_upsert(final_path, result, mb_data, enriched, deezer, has_cover=True)
         records = await catalog.list_all()
         assert len(records) == 1
@@ -302,10 +369,8 @@ class TestCatalogUpsert:
         final_path.parent.mkdir(parents=True, exist_ok=True)
         final_path.write_bytes(b"\xff\xfb")
         result = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
-        with patch("radio_ripper.services.processor.read_audio_from_file",
-                   side_effect=RuntimeError("boom")):
+        with patch("radio_ripper.services.processor.read_audio_from_file", side_effect=RuntimeError("boom")):
             await proc._catalog_upsert(final_path, result, None, None, None, has_cover=False)
         records = await catalog.list_all()
         assert len(records) == 1
         assert records[0].bitrate is None
-
