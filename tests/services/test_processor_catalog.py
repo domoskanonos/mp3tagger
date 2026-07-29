@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,7 +28,7 @@ from radio_ripper.services.processor import FileProcessor
 
 
 def _settings(tmp_path: Path, **overrides: Any) -> Settings:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         destination=tmp_path / "out",
         work_dir=tmp_path / "work",
         mp3_inbox=tmp_path / "inbox",
@@ -35,7 +36,7 @@ def _settings(tmp_path: Path, **overrides: Any) -> Settings:
         catalog_db=tmp_path / "catalog.db",
     )
     defaults.update(overrides)
-    return Settings(**defaults)
+    return Settings.model_validate(defaults)
 
 
 def _make_processor(tmp_path: Path, catalog: SqliteCatalog | None = None, **overrides: Any) -> FileProcessor:
@@ -60,7 +61,7 @@ def _make_processor(tmp_path: Path, catalog: SqliteCatalog | None = None, **over
 
 
 @pytest.fixture
-async def catalog(tmp_path: Path) -> SqliteCatalog:
+async def catalog(tmp_path: Path) -> AsyncGenerator[SqliteCatalog]:
     cat = SqliteCatalog(tmp_path / "catalog.db")
     yield cat
     await cat.aclose()

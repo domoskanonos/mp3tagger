@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -44,7 +45,7 @@ def _make_record(
 
 
 @pytest.fixture
-async def catalog(tmp_path: Path) -> SqliteCatalog:
+async def catalog(tmp_path: Path) -> AsyncGenerator[SqliteCatalog]:
     cat = SqliteCatalog(tmp_path / "catalog.db")
     yield cat
     await cat.aclose()
