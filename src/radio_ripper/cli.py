@@ -129,7 +129,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
         metadata_provider=metadata,
         tagger=tagger,
         name="tag",
-        poll_interval=2.0,
+        poll_interval=300.0,
         cover_provider=cover_archive,
         deezer_provider=deezer_provider,
         popularity_provider=popularity,

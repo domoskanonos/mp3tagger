@@ -210,7 +210,7 @@ class FileProcessor:
         tagger: TrackTagger,
         *,
         name: str = "processor",
-        poll_interval: float = 5.0,
+        poll_interval: float = 300.0,
         cover_provider: CoverArtProvider | None = None,
         deezer_provider: DeezerMetadataProvider | None = None,
         popularity_provider: PopularityProvider | None = None,
@@ -275,6 +275,7 @@ class FileProcessor:
     async def _drain_inbox(self) -> None:
         mp3s = sorted(self._inbox.glob("*.mp3"))
         if not mp3s:
+            self._log.debug("No MP3s in %s — next scan in %.0fs", self._inbox, self._poll_interval)
             return
 
         async def _gated_process(mp3: Path) -> None:
