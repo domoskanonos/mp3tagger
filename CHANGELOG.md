@@ -12,9 +12,9 @@
 - Ohne Config-Datei werden alle Defaults verwendet (kein Fehler mehr)
 
 ### Changed
-- `Settings`-Defaults vereinfacht: `mp3_inbox`, `log_file` haben feste Defaults (kein `model_validator`)
-- Dockerfile: ohne `config.docker.json`, legt `/app/mp3_inbox` an, kein `--config` im `CMD`
-- `docker-compose.yml`: Config-Volume entfernt, `mp3_inbox`-Volume hinzugefügt
+- `Settings`-Defaults vereinfacht: `source` (vormals `mp3_inbox`), `log_file` haben feste Defaults (kein `model_validator`)
+- Dockerfile: ohne `config.docker.json`, legt `/app/source` an, kein `--config` im `CMD`
+- `docker-compose.yml`: Config-Volume entfernt, `source`-Volume hinzugefügt
 - README aktualisiert (kein `config.docker.json`-Verweis mehr)
 
 ### Added

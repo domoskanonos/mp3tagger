@@ -36,7 +36,7 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(
         destination=tmp_path / "out",
         work_dir=tmp_path / "work",
-        mp3_inbox=tmp_path / "inbox",
+        source=tmp_path / "inbox",
         min_popularity_rank=0,
     )
 
@@ -48,7 +48,7 @@ def _make_processor(tmp_path: Path, **overrides: Any) -> FileProcessor:
     fp = AsyncMock()
     meta = AsyncMock()
     tagger = MagicMock()
-    inbox = settings.mp3_inbox
+    inbox = settings.source
     assert inbox is not None
     return FileProcessor(
         inbox=inbox,

@@ -1,6 +1,6 @@
 """File processor — concurrent inbox processing for recorded MP3s.
 
-Scans an ``inbox`` (mp3_inbox) for ``.mp3`` files and processes up to
+Scans an ``inbox`` (source) for ``.mp3`` files and processes up to
 ``max_concurrent`` of them in parallel. Per file:
 fingerprint → [CAA+MB || iTunes+Lyrics+ArtImg || Deezer] (parallel) →
 MB-Korrektur → Score-Vergleich → Popularitäts-Prüfung → ONE tag write,

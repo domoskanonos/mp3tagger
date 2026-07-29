@@ -5,8 +5,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./work:/app/work
-      - ../recordings:/app/recordings
-      - ./mp3_inbox:/app/mp3_inbox
+      - ./destination:/app/destination
+      - ./source:/app/source
+      - ./config:/app/config
     stop_signal: SIGTERM
     stop_grace_period: 30s
     healthcheck:

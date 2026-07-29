@@ -1,6 +1,6 @@
 {
+  "source": "/home/laptop/recordings",
   "destination": "/home/laptop/Musik",
-  "mp3_inbox": "/home/laptop/recordings",
   "catalog_db": "./work/catalog.db",
   "acoustid_min_score": 0.90,
   "min_popularity_rank": 100000,

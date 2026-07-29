@@ -81,7 +81,7 @@
 ![Runtime Flow](diagrams/runtime_flow.puml)
 
 **Hauptprozess — FileProcessor._process_file (8 Phasen):**
-1. `mp3_inbox/*.mp3` → `.processing`-Rename (Lock-Mechanismus)
+1. `source/*.mp3` → `.processing`-Rename (Lock-Mechanismus)
 2. Verschieben ins `work_dir`
 3. AcoustID-Fingerprinting → bei `NonRetriableFingerprintError`: löschen; bei `FingerprintError`: nach `failed/` verschieben; bei Score < min: löschen
 4. **Phase 1 — CAA + MB parallel:** `asyncio.gather(fetch_cover, fetch_recording_data, fetch_artist_image)` — MB ist kanonisch
@@ -96,7 +96,7 @@
 - Builder-Stage mit `uv` (Python 3.12-slim) installiert Dependencies
 - Runtime-Stage mit `python:3.12-slim` + ffmpeg + chromaprint
 - Container läuft als unprivilegierter Benutzer `ripper`
-- Volumes: `config:ro`, `work`, `recordings`
+- Volumes: `config`, `work`, `destination`, `source`
 - Healthcheck via `pgrep -f 'radio-ripper'`
 - Graceful Shutdown via SIGTERM (`stop_grace_period: 30s`)
 

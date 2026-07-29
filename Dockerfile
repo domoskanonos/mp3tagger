@@ -2,8 +2,8 @@
 # Build:   docker build -t radio-ripper-tag:latest .
 # Run:     docker run --rm --name ripper-tag \
 #            -v "$PWD/work:/app/work" \
-#            -v "$PWD/recordings:/app/recordings" \
-#            -v "$PWD/mp3_inbox:/app/mp3_inbox" \
+#            -v "$PWD/destination:/app/destination" \
+#            -v "$PWD/source:/app/source" \
 #            radio-ripper-tag:latest
 
 FROM python:3.12-slim AS builder
@@ -51,7 +51,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libchromaprint-tools \
  && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/recordings /app/work /app/mp3_inbox \
+RUN mkdir -p /app/destination /app/work /app/source \
  && chown -R ripper:ripper /app
 
 USER ripper

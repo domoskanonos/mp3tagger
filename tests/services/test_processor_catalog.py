@@ -31,7 +31,7 @@ def _settings(tmp_path: Path, **overrides: Any) -> Settings:
     defaults: dict[str, Any] = dict(
         destination=tmp_path / "out",
         work_dir=tmp_path / "work",
-        mp3_inbox=tmp_path / "inbox",
+        source=tmp_path / "inbox",
         min_popularity_rank=0,
         catalog_db=tmp_path / "catalog.db",
     )
@@ -44,7 +44,7 @@ def _make_processor(tmp_path: Path, catalog: SqliteCatalog | None = None, **over
     fp = AsyncMock()
     meta = AsyncMock()
     tagger = MagicMock()
-    inbox = settings.mp3_inbox
+    inbox = settings.source
     assert inbox is not None
     return FileProcessor(
         inbox=inbox,

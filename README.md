@@ -2,7 +2,7 @@
 
 **Webradio-Tagger** — automatisierte MP3-Tagging-Pipeline mit AcoustID-Fingerprinting, iTunes/MusicBrainz-Anreicherung und ID3v2-Tagging.
 
-Einmal eingerichtet überwacht der Container ein Eingangsverzeichnis (`mp3_inbox`), taggt eingehende MP3s automatisch und verschiebt sie ins Zielverzeichnis (`destination`).
+Einmal eingerichtet überwacht der Container ein Eingangsverzeichnis (`source`), taggt eingehende MP3s automatisch und verschiebt sie ins Zielverzeichnis (`destination`).
 
 [![CI](https://github.com/domoskanonos/radioripper/actions/workflows/ci.yml/badge.svg)](https://github.com/domoskanonos/radioripper/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -24,10 +24,10 @@ services:
     environment:
       - ACOUSTID_API_KEY=dein_key_hier
     volumes:
-      - ./config.json:/app/config.json:ro   # optional
-      - ./recordings:/app/recordings
+      - ./config:/app/config                  # optional
+      - ./destination:/app/destination
       - ./work:/app/work
-      - ./mp3_inbox:/app/mp3_inbox
+      - ./source:/app/source
 ```
 
 ```bash
@@ -49,14 +49,14 @@ uv run radio-ripper             # nutzt Default-Pfade oder config.json aus CWD
 
 ### config.json (optional)
 
-Eine optionale JSON-Datei im Container unter `/app/config.json`.  
+Eine optionale JSON-Datei im Container unter `/app/config/config.json`.  
 Ohne Datei → alle Defaults (siehe Tabelle).
 
 | Feld | Typ | Standard | Beschreibung |
 |------|-----|----------|--------------|
-| `destination` | string | `./recordings` | Zielverzeichnis für fertig getaggte MP3s |
+| `destination` | string | `./destination` | Zielverzeichnis für fertig getaggte MP3s |
 | `work_dir` | string | `./work` | Arbeitsverzeichnis (Logs, Catalog-DB) |
-| `mp3_inbox` | string | `./mp3_inbox` | Eingangsverzeichnis — hier MP3s ablegen zum Taggen |
+| `source` | string | `./source` | Eingangsverzeichnis — hier MP3s ablegen zum Taggen |
 | `log_level` | string | `INFO` | Loglevel: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `log_file` | string | `./work/radio_ripper.log` | Logdatei-Pfad |
 | `acoustid_min_score` | float | `0.85` | Minimale AcoustID-Confidence (0.0–1.0) |
@@ -76,7 +76,7 @@ Beispiel `config.json`:
 
 ```json
 {
-  "destination": "./recordings",
+  "destination": "./destination",
   "acoustid_min_score": 0.90,
   "min_popularity_rank": 100000,
   "catalog_db": "./work/catalog.db",
@@ -98,7 +98,7 @@ Beispiel `config.json`:
 **Konfig-Hierarchie** (niedrigste → höchste Priorität):
 
 1. Code-Defaults
-2. `config.json` aus `/app/config.json`
+2. `config.json` aus `/app/config/config.json`
 3. Umgebungsvariablen (`ACOUSTID_API_KEY`)
 
 ---
@@ -107,10 +107,10 @@ Beispiel `config.json`:
 
 | Volume (Host → Container) | Zweck |
 |---------------------------|-------|
-| `./mp3_inbox:/app/mp3_inbox` | **Eingang** — hier MP3s hineinlegen oder per Recording-Tool ablegen |
-| `./recordings:/app/recordings` | **Ziel** — fertig getaggte MP3s landen hier, sortiert nach Interpret/Album |
+| `./source:/app/source` | **Eingang** — Recorder legen hier ihre rohen MP3s ab |
+| `./destination:/app/destination` | **Ziel** — fertig getaggte MP3s landen hier, sortiert nach Interpret/Album |
 | `./work:/app/work` | **Arbeit** — Logdatei + Catalog-DB |
-| `./config.json:/app/config.json` | **Konfiguration** (optional, readonly) |
+| `./config:/app/config` | **Konfiguration** (optional) |
 
 ---
 
@@ -120,7 +120,7 @@ Jede eingehende MP3 durchläuft:
 
 | Phase | Beschreibung |
 |-------|-------------|
-| **Polling** | Überwachung von `mp3_inbox` auf neue `.mp3`-Dateien |
+| **Polling** | Überwachung von `source` auf neue `.mp3`-Dateien |
 | **Staging** | Kopieren ins Arbeitsverzeichnis (safe rename) |
 | **Fingerprinting** | Chromaprint/AcoustID — berechnet Audio-Fingerprint |
 | **Metadata** | iTunes Search API — Titel, Interpret, Album, Genre |

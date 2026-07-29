@@ -13,7 +13,7 @@ from radio_ripper.infra.errors import ConfigurationError
 class Settings(BaseModel):
     model_config = {"populate_by_name": True}
 
-    destination: Path = Field(default=Path("./recordings"))
+    destination: Path = Field(default=Path("./destination"))
     work_dir: Path = Field(default=Path("./work"))
 
     log_level: str = "INFO"
@@ -22,7 +22,7 @@ class Settings(BaseModel):
     metadata_timeout: float = Field(default=8.0, ge=0.5)
     cover_timeout: float = Field(default=15.0, ge=0.5)
 
-    mp3_inbox: Path = Field(default=Path("./mp3_inbox"))
+    source: Path = Field(default=Path("./source"))
     acoustid_min_score: float = Field(default=0.85, ge=0.0, le=1.0)
     min_popularity_rank: int = Field(default=100000, ge=0)
     enable_coverartarchive: bool = True
@@ -51,7 +51,7 @@ class Settings(BaseModel):
             raise ValueError(f"invalid log_level: {v}")
         return v
 
-    @field_validator("work_dir", "destination", "log_file", "mp3_inbox", "catalog_db")
+    @field_validator("work_dir", "destination", "log_file", "source", "catalog_db")
     @classmethod
     def _expand(cls, v: Path) -> Path:
         return v.expanduser()
