@@ -121,9 +121,14 @@ jobs:
             domoskanonos/mp3tagger:${{ steps.version.outputs.version }}
             domoskanonos/mp3tagger:latest
       - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-          repository: domoskanonos/mp3tagger
-          readme-filepath: ./DOCKER_HUB.md
+        run: |
+          DESCRIPTION=$(python3 -c "import json; print(json.dumps(open('DOCKER_HUB.md').read()))")
+          TOKEN=$(curl -s -H "Content-Type: application/json" \
+            -X POST \
+            -d "{\"username\":\"${{ secrets.DOCKER_USERNAME }}\",\"password\":\"${{ secrets.DOCKER_PASSWORD }}\"}" \
+            https://hub.docker.com/v2/users/login/ | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          curl -s -H "Authorization: JWT $TOKEN" \
+            -H "Content-Type: application/json" \
+            -X PATCH \
+            -d "{\"full_description\": $DESCRIPTION}" \
+            https://hub.docker.com/v2/repositories/domoskanonos/mp3tagger/
