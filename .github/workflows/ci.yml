@@ -57,13 +57,46 @@ jobs:
           path: htmlcov/
           retention-days: 30
 
-  docker:
-    name: Docker
+  release:
+    name: Release
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     needs: [lint, type-check, test]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --quiet
+      - name: Semantic Release
+        run: uv run semantic-release -v publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Read released version
+        id: version
+        run: |
+          TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || true)
+          if [ -n "$TAG" ]; then
+            echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+  docker:
+    name: Docker
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release.outputs.version && format('v{0}', needs.release.outputs.version) || '' }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to Docker Hub
@@ -71,9 +104,14 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-      - name: Extract version
+      - name: Determine version
         id: version
-        run: echo "version=$(grep ^version pyproject.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep ^version pyproject.toml | cut -d'"' -f2)
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -82,4 +120,3 @@ jobs:
           tags: |
             domoskanonos/mp3tagger:${{ steps.version.outputs.version }}
             domoskanonos/mp3tagger:latest
-            domoskanonos/mp3tagger:${{ github.sha }}
