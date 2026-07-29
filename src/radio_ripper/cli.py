@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -54,7 +55,31 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
+async def _watch_config(
+    cfg_path: Path,
+    proc: FileProcessor,
+    logger: logging.Logger,
+    log_level: str,
+) -> None:
+    last_mtime = cfg_path.stat().st_mtime
+    while True:
+        await asyncio.sleep(10)
+        try:
+            mtime = cfg_path.stat().st_mtime
+            if mtime > last_mtime:
+                new_settings = load_settings(cfg_path)
+                if new_settings.log_level != log_level:
+                    logging.getLogger().setLevel(new_settings.log_level)
+                    logger.setLevel(new_settings.log_level)
+                    log_level = new_settings.log_level
+                proc.reload_settings(new_settings)
+                last_mtime = mtime
+                logger.info("Config reloaded from %s (mtime changed)", cfg_path)
+        except Exception:
+            logger.warning("Config reload failed", exc_info=True)
+
+
+async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Path | None = None) -> int:
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
@@ -117,11 +142,21 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger) -> int:
     loop.add_signal_handler(signal.SIGINT, _signal_handler, signal.SIGINT, None)
     loop.add_signal_handler(signal.SIGTERM, _signal_handler, signal.SIGTERM, None)
 
+    watch_task: asyncio.Task[None] | None = None
+    if cfg_path:
+        watch_task = asyncio.create_task(
+            _watch_config(cfg_path, proc, logger, settings.log_level)
+        )
+
     await proc.start()
     try:
         await stop_event.wait()
     finally:
         await proc.stop()
+        if watch_task:
+            watch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch_task
         await catalog.aclose()
         await client.aclose()
     return 0
@@ -153,7 +188,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.info("No config file found — using defaults")
 
     try:
-        return asyncio.run(_run_pipeline(settings, logger))
+        return asyncio.run(_run_pipeline(settings, logger, cfg_path))
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt — shut down.")
         return 0

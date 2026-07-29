@@ -236,6 +236,9 @@ class FileProcessor:
         self._catalog = catalog
         self._semaphore = asyncio.Semaphore(settings.max_concurrent)
 
+    def reload_settings(self, settings: Settings) -> None:
+        self._settings = settings
+
     # ── public lifecycle ──
 
     async def start(self) -> None:
