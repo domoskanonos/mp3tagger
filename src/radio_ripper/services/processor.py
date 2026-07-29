@@ -326,7 +326,7 @@ class FileProcessor:
         work_path = self._settings.work_dir / proc_path.name
         try:
             work_path.parent.mkdir(parents=True, exist_ok=True)
-            proc_path.rename(work_path)
+            shutil.move(str(proc_path), str(work_path))
             return work_path
         except OSError:
             self._log.error(
@@ -696,7 +696,7 @@ class FileProcessor:
         # ── Phase 9: Atomarer Move zu destination + ggf. alte Datei löschen ──
         final_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            stage_path.rename(final_path)
+            shutil.move(str(stage_path), str(final_path))
         except OSError:
             self._log.error(
                 "[DELETE] %s — Grund: Verschieben nach %s fehlgeschlagen",
