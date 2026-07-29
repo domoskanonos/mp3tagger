@@ -95,7 +95,7 @@
 **Docker-Deployment (Multi-Stage-Build):**
 - Builder-Stage mit `uv` (Python 3.12-slim) installiert Dependencies
 - Runtime-Stage mit `python:3.12-slim` + ffmpeg + chromaprint
-- Container läuft als unprivilegierter Benutzer `ripper`
+- Container läuft als root; zur Laufzeit über `--user $(id -u):$(id -g)` auf Host-User runterstufbar
 - Volumes: `config`, `work`, `destination`, `source`
 - Healthcheck via `pgrep -f 'radio-ripper'`
 - Graceful Shutdown via SIGTERM (`stop_grace_period: 30s`)

@@ -33,9 +33,6 @@ LABEL org.opencontainers.image.title="radio-ripper-tag" \
       org.opencontainers.image.description="Webradio tagger — AcoustID fingerprinting, iTunes enrichment, ID3v2 tagging" \
       org.opencontainers.image.source="https://github.com/domoskanonos/radioripper"
 
-RUN groupadd --system --gid 1001 ripper \
- && useradd --system --uid 1001 --gid ripper --home-dir /app --shell /usr/sbin/nologin ripper
-
 WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
@@ -51,9 +48,6 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libchromaprint-tools \
  && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/destination /app/work /app/source \
- && chown -R ripper:ripper /app
-
-USER ripper
+RUN mkdir -p /app/destination /app/work /app/source
 
 ENTRYPOINT ["radio-ripper"]
