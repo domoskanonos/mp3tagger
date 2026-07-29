@@ -29,6 +29,23 @@ from radio_ripper.services.tagging import ID3Tagger
 _LOGGER = logging.getLogger(__name__)
 
 
+def _find_config(cfg_arg: str | None) -> Path | None:
+    if cfg_arg:
+        p = Path(cfg_arg).expanduser()
+        if p.is_file():
+            return p
+
+    candidates = [
+        Path("config.json"),
+        Path.home() / ".config" / "radio-ripper" / "config.json",
+        Path("/app/config/config.json"),
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="radio-ripper-tag")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -114,22 +131,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
-    cfg_path: str | None = args.config
-    if cfg_path is None or not Path(cfg_path).expanduser().is_file():
-        print("No config found. Use --config PATH.", file=sys.stderr)
-        return 2
+    cfg_path = _find_config(args.config)
 
-    try:
-        settings = load_settings(cfg_path)
-    except ConfigurationError as exc:
-        print(f"Failed to load config: {exc}", file=sys.stderr)
-        return 2
+    if cfg_path:
+        try:
+            settings = load_settings(cfg_path)
+        except ConfigurationError as exc:
+            print(f"Failed to load config: {exc}", file=sys.stderr)
+            return 2
+    else:
+        settings = Settings()
 
     if args.log_level:
         settings = settings.model_copy(update={"log_level": args.log_level})
 
     logger = configure_logging(settings.log_level, settings.log_file)
     logger.info("=== Radio-Ripper %s (tag mode) ===", __version__)
+    if cfg_path:
+        logger.info("Config loaded from %s", cfg_path)
+    else:
+        logger.info("No config file found — using defaults")
 
     try:
         return asyncio.run(_run_pipeline(settings, logger))

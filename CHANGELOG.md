@@ -5,6 +5,17 @@
 ### Removed
 - `tag_file.py` (broken imports since metadata-split — cli.py:main is the single entrypoint)
 - `tagging/` ad-hoc docs (migrated to `docs/audits/`)
+- `config.docker.json`, `config.example.json` — nur noch `config.json`
+
+### Added
+- Config-Auto-Discovery: `--config` → `./config.json` → `~/.config/radio-ripper/config.json` → `/app/config/config.json`
+- Ohne Config-Datei werden alle Defaults verwendet (kein Fehler mehr)
+
+### Changed
+- `Settings`-Defaults vereinfacht: `mp3_inbox`, `log_file` haben feste Defaults (kein `model_validator`)
+- Dockerfile: ohne `config.docker.json`, legt `/app/mp3_inbox` an, kein `--config` im `CMD`
+- `docker-compose.yml`: Config-Volume entfernt, `mp3_inbox`-Volume hinzugefügt
+- README aktualisiert (kein `config.docker.json`-Verweis mehr)
 
 ### Added
 - `tests/services/test_processor.py` (39 tests — full FileProcessor pipeline coverage)

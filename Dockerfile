@@ -1,9 +1,9 @@
 # Dockerfile — radio-ripper-tag (fingerprint, enrich, tag)
 # Build:   docker build -t radio-ripper-tag:latest .
 # Run:     docker run --rm --name ripper-tag \
-#            -v "$PWD/config:/app/config:ro" \
 #            -v "$PWD/work:/app/work" \
 #            -v "$PWD/recordings:/app/recordings" \
+#            -v "$PWD/mp3_inbox:/app/mp3_inbox" \
 #            radio-ripper-tag:latest
 
 FROM python:3.12-slim AS builder
@@ -51,12 +51,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg libchromaprint-tools \
  && rm -rf /var/lib/apt/lists/*
 
-COPY config.docker.json /app/config/config.json
-
-RUN mkdir -p /app/recordings /app/work /app/config \
+RUN mkdir -p /app/recordings /app/work /app/mp3_inbox \
  && chown -R ripper:ripper /app
 
 USER ripper
 
 ENTRYPOINT ["radio-ripper"]
-CMD ["--config", "/app/config/config.json"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from radio_ripper.infra.errors import ConfigurationError
 
@@ -17,12 +17,12 @@ class Settings(BaseModel):
     work_dir: Path = Field(default=Path("./work"))
 
     log_level: str = "INFO"
-    log_file: Path | None = None
+    log_file: Path = Field(default=Path("./work/radio_ripper.log"))
 
     metadata_timeout: float = Field(default=8.0, ge=0.5)
     cover_timeout: float = Field(default=15.0, ge=0.5)
 
-    mp3_inbox: Path | None = Field(default=None, alias="mp3_inbox")
+    mp3_inbox: Path = Field(default=Path("./mp3_inbox"))
     acoustid_min_score: float = Field(default=0.85, ge=0.0, le=1.0)
     min_popularity_rank: int = Field(default=100000, ge=0)
     enable_coverartarchive: bool = True
@@ -52,16 +52,8 @@ class Settings(BaseModel):
 
     @field_validator("work_dir", "destination", "log_file", "mp3_inbox", "catalog_db")
     @classmethod
-    def _expand(cls, v: Path | None) -> Path | None:
-        return v.expanduser() if v is not None else None
-
-    @model_validator(mode="after")
-    def _resolve_work_paths(self) -> Settings:
-        if self.log_file is None:
-            self.log_file = self.work_dir / "radio_ripper.log"
-        if self.mp3_inbox is None:
-            self.mp3_inbox = Path("./mp3_inbox")
-        return self
+    def _expand(cls, v: Path) -> Path:
+        return v.expanduser()
 
 
 def load_settings(path: str | Path) -> Settings:

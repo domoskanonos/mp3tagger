@@ -16,21 +16,26 @@
 docker compose up -d
 ```
 
-Konfiguration via `config.docker.json` anpassen, `.env` mit `ACOUSTID_API_KEY` befüllen.
+Die Standard-Pfade (`./recordings`, `./work`, `./mp3_inbox`) lösen im Container
+automatisch nach `/app/...` auf — Volume-Mounts in `docker-compose.yml`
+steuern, wo die Daten landen.
+
+`.env` mit `ACOUSTID_API_KEY` befüllen, ggf. eigene `config.json` mounten.
 
 ### Lokale Installation
 
 ```bash
 # Voraussetzungen: Python >=3.11, uv, ffmpeg, libchromaprint-tools
 uv sync
-uv run radio-ripper --config config.json
+uv run radio-ripper             # nutzt Default-Pfade oder config.json aus CWD
 ```
 
 ---
 
 ## Konfiguration
 
-Die Konfiguration erfolgt über eine JSON-Datei (siehe `config.json` / `config.docker.json`):
+Die Konfiguration erfolgt über eine optionale JSON-Datei (siehe `config.json`).  
+Fehlt die Datei, werden alle Defaults verwendet:
 
 | Feld | Typ | Standard | Beschreibung |
 |------|-----|----------|--------------|

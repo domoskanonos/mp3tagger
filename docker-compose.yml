@@ -4,9 +4,9 @@ services:
     container_name: radio-ripper-tag
     restart: unless-stopped
     volumes:
-      - ./config:/app/config:ro
       - ./work:/app/work
       - ../recordings:/app/recordings
+      - ./mp3_inbox:/app/mp3_inbox
     stop_signal: SIGTERM
     stop_grace_period: 30s
     healthcheck:
