@@ -74,6 +74,6 @@ jobs:
           enable-cache: true
       - run: uv sync --quiet
       - name: Semantic Release
-        run: uv run semantic-release -v version publish
+        run: uv run semantic-release -v version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
