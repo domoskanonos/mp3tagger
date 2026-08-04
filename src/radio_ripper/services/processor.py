@@ -498,8 +498,7 @@ class FileProcessor:
         cover_after = bool(after.get("has_cover"))
         if cover_before != cover_after:
             changes.append(
-                f"Cover: {'vorhanden' if cover_before else 'fehlt'} -> "
-                f"{'vorhanden' if cover_after else 'fehlt'}"
+                f"Cover: {'vorhanden' if cover_before else 'fehlt'} -> {'vorhanden' if cover_after else 'fehlt'}"
             )
 
         if changes:

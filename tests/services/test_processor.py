@@ -586,7 +586,7 @@ class TestEnrichExistingFiles:
         from radio_ripper.services.tagging import ID3Tagger
 
         proc = _make_processor(tmp_path, min_popularity_rank=0)
-        proc._tagger = ID3Tagger()  # type: ignore[method-assign]
+        proc._tagger = ID3Tagger()
         dest = proc._settings.destination / "Artist"
         dest.mkdir(parents=True, exist_ok=True)
         f = dest / "Artist - Title.mp3"
@@ -731,7 +731,7 @@ class TestProcessFileFailurePaths:
 
         calls = 0
 
-        def _flaky(*args, **kwargs):  # type: ignore[no-untyped-def]
+        def _flaky(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
