@@ -78,8 +78,8 @@ async def _watch_config(
                 return
             try:
                 mtime = cfg_path.stat().st_mtime
-                if mtime > last_mtime:
-                    new_settings = load_settings(cfg_path)
+                if mtime != last_mtime:
+                    new_settings = await _load_settings_with_retry(cfg_path, logger)
                     if new_settings.log_level != log_level:
                         logging.getLogger().setLevel(new_settings.log_level)
                         logger.setLevel(new_settings.log_level)
@@ -91,6 +91,27 @@ async def _watch_config(
                 logger.warning("Config reload failed", exc_info=True)
     finally:
         watcher.stop()
+
+
+async def _load_settings_with_retry(
+    cfg_path: Path,
+    logger: logging.Logger,
+    *,
+    attempts: int = 5,
+    delay: float = 0.05,
+) -> Settings:
+    """Lädt die Config mit Retry — Editoren schreiben nicht atomar, die Datei
+    kann kurz leer/teilgeschrieben sein. Nach dem Schreiben wird sie erneut gelesen."""
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        try:
+            return load_settings(cfg_path)
+        except ConfigurationError as exc:
+            last_exc = exc
+            if i < attempts - 1:
+                await asyncio.sleep(delay * (i + 1))
+    assert last_exc is not None
+    raise last_exc
 
 
 async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Path | None = None) -> int:
