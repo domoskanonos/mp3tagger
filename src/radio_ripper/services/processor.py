@@ -85,17 +85,32 @@ def _strip_untested_suffix(
 def correct_fingerprint_result(
     result: FingerprintResult,
     mb_data: MusicBrainzData | None,
+    enriched: EnrichedInfo | None = None,
 ) -> FingerprintResult:
     """Überschreibt AcoustID-Artist/Title mit MusicBrainz-Daten, wenn vorhanden.
 
     AcoustID liefert oft nur grobe Metadaten oder hat Künstler/Titel
     vertauscht. MusicBrainz ist die kanonische Quelle — wenn MB-Daten
-    existieren, werden sie immer bevorzugt.
+    existieren, werden sie immer bevorzugt. Fallback: Wenn MB keine
+    Korrektur liefert (API down/keine Daten), wird der iTunes-Künstler/-Titel
+    verwendet, falls er vom AcoustID-Ergebnis abweicht.
     """
     if mb_data and mb_data.recording_artist:
         return FingerprintResult(
             artist=mb_data.recording_artist,
             title=mb_data.recording_title or result.title,
+            score=result.score,
+            recording_id=result.recording_id,
+        )
+    if (
+        enriched
+        and enriched.artist
+        and enriched.title
+        and (enriched.artist != result.artist or enriched.title != result.title)
+    ):
+        return FingerprintResult(
+            artist=enriched.artist,
+            title=enriched.title,
             score=result.score,
             recording_id=result.recording_id,
         )
@@ -605,8 +620,8 @@ class FileProcessor:
         enriched, cover_from_enrich, artist_image, lyrics = await phase3_task
         deezer_data, deezer_cover = await deezer_task
 
-        # ── Phase 4: MB-Korrektur (MB-Daten sind kanonisch) ──
-        corrected = correct_fingerprint_result(result, mb_data)
+        # ── Phase 4: MB-Korrektur (MB-Daten sind kanonisch, iTunes als Fallback) ──
+        corrected = correct_fingerprint_result(result, mb_data, enriched)
         if corrected is not result:
             self._log.info(
                 "[%s] MB corrected artist/title: %s -> %s / %s -> %s",

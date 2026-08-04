@@ -145,6 +145,38 @@ class TestID3Tagger:
         audio2 = ID3(f)
         assert (alb := audio2.get("TALB")) is not None and alb.text == ["Correct Album"]
 
+    def test_write_all_trck_is_track_not_disc(self, tmp_path: Path):
+        """Bug: TRCK wurde als 'disc/track' geschrieben; Disc gehört in TPOS."""
+        from radio_ripper.domain.models import ITunesTrackData
+
+        f = tmp_path / "song.mp3"
+        _write_blank_mp3(f)
+        tagger = ID3Tagger()
+        track = TrackInfo("A - B", "A", "B")
+        enriched = EnrichedInfo(
+            track_number=3,
+            disc_number=1,
+            itunes_data=ITunesTrackData(track_count=12, disc_count=2),
+        )
+        tagger.write_all(f, track, "S@u", enriched=enriched)
+        audio = ID3(f)
+        assert (trck := audio.get("TRCK")) is not None and trck.text == ["3/12"]
+        assert (tpos := audio.get("TPOS")) is not None and tpos.text == ["1/2"]
+
+    def test_write_all_embeds_gif_cover(self, tmp_path: Path):
+        """Bug: GIF-Cover wurde verworfen → Song blieb coverlos."""
+        f = tmp_path / "song.mp3"
+        _write_blank_mp3(f)
+        tagger = ID3Tagger()
+        track = TrackInfo("A - B", "A", "B")
+        gif = b"GIF89a" + b"\x00" * 128
+        tagger.write_all(f, track, "S@u", cover_bytes=gif)
+        audio = ID3(f)
+        apic = audio.get("APIC:Cover")
+        assert apic is not None
+        assert apic.data == gif
+        assert apic.mime == "image/gif"
+
 
 class TestScaleCover:
     def test_gif_returns_none(self):

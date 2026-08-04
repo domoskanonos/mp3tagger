@@ -143,6 +143,27 @@ class TestCorrectFingerprintResult:
         assert corrected.score == 0.95
         assert corrected.recording_id == "r1"
 
+    def test_itunes_fallback_when_mb_empty(self):
+        result = FingerprintResult(artist="AcoustIDArtist", title="AcoustIDTitle", score=0.9, recording_id="r1")
+        enriched = EnrichedInfo(artist="ITunesArtist", title="ITunesTitle")
+        corrected = correct_fingerprint_result(result, None, enriched)
+        assert corrected.artist == "ITunesArtist"
+        assert corrected.title == "ITunesTitle"
+
+    def test_itunes_fallback_ignored_when_same_as_acoustid(self):
+        result = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
+        enriched = EnrichedInfo(artist="A", title="T")
+        corrected = correct_fingerprint_result(result, None, enriched)
+        assert corrected is result
+
+    def test_mb_wins_over_itunes(self):
+        result = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
+        mb = MusicBrainzData(recording_id="r1", recording_artist="MBArtist", recording_title="MBTitle")
+        enriched = EnrichedInfo(artist="ITunesArtist", title="ITunesTitle")
+        corrected = correct_fingerprint_result(result, mb, enriched)
+        assert corrected.artist == "MBArtist"
+        assert corrected.title == "MBTitle"
+
 
 # ── _fetch_artist_image ──
 

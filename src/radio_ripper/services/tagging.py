@@ -131,14 +131,19 @@ def _tag_edit_context(file_path: Path, op_name: str = "") -> Iterator[ID3]:
 def _embed_apic(audio: ID3, data: bytes, apic_type: int, desc: str) -> None:
     """Bettet ein Bild als APIC-Frame in das ID3-Objekt ein.
 
-    Vorhandene Frames mit demselben Namen (z.B. APIC:Cover) werden vorher
-    gelöscht. Das Bild wird vor dem Einbetten via _scale_cover skaliert.
+    Das Bild wird zuerst via _scale_cover skaliert. Schlägt das Skalieren
+    fehl (z.B. GIF oder undekodierbares Bild), werden die Original-Daten mit
+    dem erratenen MIME-Typ eingebettet statt das Cover ganz zu verlieren.
+    Erst nach erfolgreichem Skalieren wird ein vorhandener Frame gelöscht,
+    damit ein korrektes Cover nie durch einen Fehlversuch ersetzt wird.
     """
-    audio.delall(f"APIC:{desc}")
     scaled = _scale_cover(data)
     if scaled is not None:
         scaled_data, mime = scaled
-        audio.add(APIC(encoding=3, mime=mime, type=apic_type, desc=desc, data=scaled_data))
+    else:
+        scaled_data, mime = data, _guess_image_mime(data)
+    audio.delall(f"APIC:{desc}")
+    audio.add(APIC(encoding=3, mime=mime, type=apic_type, desc=desc, data=scaled_data))
 
 
 def _existing_text(audio: ID3, frame_id: str) -> str | None:
@@ -350,13 +355,17 @@ class ID3Tagger(TrackTagger):
             _set_frame("TPUB", TPUB, label)
 
         # Track-/Disc-Nummer
+        # TRCK = track/total_tracks (NICHT disc/track — Disc gehört in TPOS).
         if enriched.track_number is not None:
             trck = str(enriched.track_number)
-            if enriched.disc_number is not None:
-                trck = f"{enriched.disc_number}/{trck}"
+            if enriched.itunes_data and enriched.itunes_data.track_count is not None:
+                trck = f"{trck}/{enriched.itunes_data.track_count}"
             _set_frame("TRCK", TRCK, trck)
         if enriched.disc_number is not None:
-            _set_frame("TPOS", TPOS, str(enriched.disc_number))
+            tpos = str(enriched.disc_number)
+            if enriched.itunes_data and enriched.itunes_data.disc_count is not None:
+                tpos = f"{tpos}/{enriched.itunes_data.disc_count}"
+            _set_frame("TPOS", TPOS, tpos)
 
         # Titel-Länge: mb_data → deezer → enriched
         length = None
