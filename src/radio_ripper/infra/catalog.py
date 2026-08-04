@@ -430,30 +430,63 @@ class SqliteCatalog(Catalog):
     async def reconcile_with_filesystem(self, destination: Path, *, concurrency: int = 10) -> ReconcileReport:
         """Synchronisiert DB ⇄ Dateisystem einmalig.
 
-        1. Alle DB-Zeilen laden; verwaiste Einträge (File fehlt) löschen.
-        2. ``destination/`` rekursiv scannen; neue MP3s indizieren.
+        1. Alle DB-Zeilen laden:
+           - Datei fehlt auf Disk → DB-Eintrag löschen (Dateileiche).
+           - Datei existiert → Tags neu einlesen und DB-Eintrag aktualisieren.
+        2. ``destination/`` rekursiv scannen; neue MP3s (noch nicht in DB) indizieren.
         """
         import time
 
         start = time.monotonic()
         report = ReconcileReport()
 
-        # Schritt 1: verwaiste Einträge entfernen
+        sem = asyncio.Semaphore(concurrency)
+
+        # Schritt 1: vorhandene Einträge prüfen — verwaiste löschen, existierende aktualisieren
         all_rows = await self.list_all()
         known_paths: set[str] = set()
-        for row in all_rows:
-            if Path(row.file_path).exists():
+
+        async def _refresh_existing(row: SongRecord) -> None:
+            async with sem:
+                if not Path(row.file_path).exists():
+                    await self.remove(row.file_path)
+                    report.removed += 1
+                    _LOGGER.debug("[Reconcile] entfernt verwaisten DB-Eintrag: %s", row.file_path)
+                    return
+                # Datei existiert → Tags neu lesen und DB aktualisieren
                 known_paths.add(row.file_path)
-                report.kept += 1
-            else:
-                await self.remove(row.file_path)
-                report.removed += 1
-                _LOGGER.debug("[Reconcile] entfernt verwaisten DB-Eintrag: %s", row.file_path)
+                try:
+                    rec = await asyncio.to_thread(self._build_record_from_file, Path(row.file_path))
+                    if rec is not None:
+                        # station_name aus vorhandenem DB-Eintrag erhalten (steht nicht im Tag)
+                        refreshed = SongRecord(
+                            file_path=rec.file_path,
+                            recording_id=rec.recording_id,
+                            isrc=rec.isrc,
+                            artist=rec.artist,
+                            title=rec.title,
+                            album=rec.album,
+                            release_group_type=rec.release_group_type,
+                            station_name=row.station_name,
+                            file_size=rec.file_size,
+                            bitrate=rec.bitrate,
+                            sample_rate=rec.sample_rate,
+                            duration_ms=rec.duration_ms,
+                            acoustid_score=rec.acoustid_score,
+                            popularity_rank=rec.popularity_rank,
+                            has_cover=rec.has_cover,
+                        )
+                        await self.upsert(refreshed)
+                        report.kept += 1
+                except Exception as exc:
+                    report.errors.append(f"{row.file_path}: {exc}")
+                    _LOGGER.debug("[Reconcile] Fehler beim Aktualisieren von %s: %s", row.file_path, exc)
+                    report.kept += 1  # zählen trotzdem als vorhanden
+
+        await asyncio.gather(*(_refresh_existing(row) for row in all_rows))
 
         # Schritt 2: neue Dateien indizieren
         mp3_files: list[Path] = [p for p in destination.rglob("*.mp3") if str(p) not in known_paths]
-
-        sem = asyncio.Semaphore(concurrency)
 
         async def _index_one(path: Path) -> None:
             async with sem:

@@ -18,13 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, MusicBrainzData, TrackInfo
-from radio_ripper.infra.catalog import Catalog, SongRecord, read_audio_from_file
+from radio_ripper.infra.catalog import Catalog, SongRecord, read_audio_from_file, read_tags_from_file
 from radio_ripper.infra.config import Settings
 from radio_ripper.services.collection_manager import (
     is_better_version,
-    is_same_version,
     pick_eviction_candidate,
-    should_exclude_as_live,
 )
 from radio_ripper.services.file_utils import compute_file_path, safe_unlink
 from radio_ripper.services.fingerprint import (
@@ -235,6 +233,9 @@ class FileProcessor:
         self._lyrics_provider = lyrics_provider
         self._catalog = catalog
         self._semaphore = asyncio.Semaphore(settings.max_concurrent)
+        # Pro recording_id ein Lock — verhindert Race Condition bei gleichzeitiger
+        # Verarbeitung desselben Songs durch mehrere Worker.
+        self._recording_locks: dict[str, asyncio.Lock] = {}
 
     def reload_settings(self, settings: Settings) -> None:
         self._settings = settings
@@ -423,8 +424,6 @@ class FileProcessor:
         track: TrackInfo,
         enriched: EnrichedInfo | None,
         work_path: Path,
-        *,
-        mb_data: MusicBrainzData | None = None,
     ) -> tuple[str, Path | None, Path | None]:
         """Berechnet Zielpfad + Versions-Vergleich mit bestehenden Dateien.
 
@@ -451,61 +450,90 @@ class FileProcessor:
         delete_old: Path | None = None
 
         # ── Schritt 1: Katalog-basierter Versionsvergleich ──
+        # Gleiche recording_id = definitiv derselbe Song (unabhängig von ISRC/Album).
+        # Alle bekannten Kopien werden geprüft — ist auch nur eine besser, wird die neue verworfen.
+        # Ist die neue besser, werden ALLE vorhandenen Kopien gelöscht (keine Duplikate).
         if self._catalog is not None and result.recording_id:
             existing_versions = await self._catalog.find_by_recording_id(result.recording_id)
-            new_isrc = mb_data.isrcs[0] if mb_data and mb_data.isrcs else None
+            to_delete: list[Path] = []
             for ev in existing_versions:
-                if not is_same_version(result.recording_id, new_isrc, ev.recording_id, ev.isrc):
-                    continue
                 if ev.file_path == str(final_path):
                     continue  # wird über Pfad-Fallback behandelt
-                # Gleiche Version — Audioqualität vergleichen (neu ist noch unkatalogisiert,
-                # aber wir haben dessen Fingerprint-Score; Bitrate erst nach Tagging verfügbar).
-                if is_better_version(
-                    result.score,
-                    None,
-                    None,
-                    ev.acoustid_score,
-                    ev.bitrate,
-                    ev.sample_rate,
+                candidate = Path(ev.file_path)
+                if not candidate.exists():
+                    # Verwaister DB-Eintrag — sofort bereinigen
+                    self._log.info(
+                        "[%s] Verwaister Katalog-Eintrag (Datei fehlt) — bereinige: %s",
+                        self._name,
+                        ev.file_path,
+                    )
+                    await self._catalog.remove(ev.file_path)
+                    continue
+                if not is_better_version(
+                    result.score, None, None,
+                    ev.acoustid_score, ev.bitrate, ev.sample_rate,
                 ):
-                    candidate = Path(ev.file_path)
-                    if candidate.exists():
-                        delete_old = candidate
-                        self._log.info(
-                            "[%s] Katalog-Treffer: ersetze %s (score=%.4f) durch bessere Version (%.4f)",
-                            self._name,
-                            candidate.name,
-                            ev.acoustid_score or 0.0,
-                            result.score,
-                        )
-                        break
-                # bestehende Version hat besseren Score → neue verwerfen
+                    # Mindestens eine vorhandene Kopie ist besser oder gleich → neue verwerfen
+                    self._log.info(
+                        "[DELETE] %s — Grund: Katalog-Treffer mit gleicher/besserer Version (score=%.4f >= %.4f)",
+                        work_path.name,
+                        ev.acoustid_score or 0.0,
+                        result.score,
+                    )
+                    return "", None, None
+                # Neue ist besser — diese Kopie für Löschung vormerken
+                to_delete.append(candidate)
                 self._log.info(
-                    "[DELETE] %s — Grund: Katalog-Treffer mit gleicher/ besserer Version (score=%.4f >= %.4f)",
-                    work_path.name,
+                    "[%s] Katalog-Treffer: ersetze %s (score=%.4f) durch bessere Version (%.4f)",
+                    self._name,
+                    candidate.name,
                     ev.acoustid_score or 0.0,
                     result.score,
                 )
-                return "", None, None
+            # Erste zu löschende Datei als delete_old (wird nach Move gelöscht + DB bereinigt),
+            # alle weiteren sofort löschen — verhindert mehrere Kopien desselben Songs.
+            if to_delete:
+                delete_old = to_delete[0]
+                for extra in to_delete[1:]:
+                    self._log.info(
+                        "[DELETE] %s — Grund: weiteres Duplikat derselben recording_id",
+                        extra.name,
+                    )
+                    safe_unlink(extra, parents_root=self._settings.destination)
+                    await self._catalog.remove(str(extra))
 
         # ── Schritt 2: Pfad-Fallback (gleicher Zielpfad) ──
         if final_path.exists() and delete_old is None:
-            existing_score = read_acoustid_score(final_path)
-            if existing_score is not None and existing_score >= result.score:
+            # Prüfen ob die existierende Datei ein anderer Song ist (andere recording_id)
+            existing_tags = read_tags_from_file(final_path)
+            existing_recording_id = existing_tags.get("recording_id")
+            if existing_recording_id and result.recording_id and existing_recording_id != result.recording_id:
+                # Echter Namens-Kollision zwischen verschiedenen Songs (Sanitizing-Effekt).
+                # Neuen eindeutigen Pfad mit recording_id-Suffix wählen — beide Songs behalten.
+                stem = final_path.stem
+                suffix_id = result.recording_id[:8]
+                final_path = final_path.with_name(f"{stem} [{suffix_id}].mp3")
                 self._log.info(
-                    "[DELETE] %s — Grund: existierende Datei hat besseren/gleichen Score (%.4f >= %.4f)",
-                    work_path.name,
-                    existing_score,
-                    result.score,
+                    "[%s] Namens-Kollision mit anderem Song — alternativer Pfad: %s",
+                    self._name,
+                    final_path.name,
                 )
-                return "", None, None
-            self._log.info(
-                "Neue Datei hat besseren Score (%.4f > %.4f) — alte wird nach erfolgreichem Move gelöscht",
-                result.score,
-                existing_score or 0.0,
-            )
-            delete_old = final_path
+            else:
+                existing_score = read_acoustid_score(final_path)
+                if existing_score is not None and existing_score >= result.score:
+                    self._log.info(
+                        "[DELETE] %s — Grund: existierende Datei hat besseren/gleichen Score (%.4f >= %.4f)",
+                        work_path.name,
+                        existing_score,
+                        result.score,
+                    )
+                    return "", None, None
+                self._log.info(
+                    "Neue Datei hat besseren Score (%.4f > %.4f) — alte wird nach erfolgreichem Move gelöscht",
+                    result.score,
+                    existing_score or 0.0,
+                )
+                delete_old = final_path
 
         return provenance, final_path, delete_old
 
@@ -520,8 +548,13 @@ class FileProcessor:
 
         # ── Phase 3: CAA+MB || iTunes+Lyrics+ArtImg || Deezer (alle parallel, alle nur vom Fingerprint abhängig) ──
         fp_result = result
-        stream_title_pre = f"{fp_result.artist} - {fp_result.title}"
-        track_pre = TrackInfo.from_stream_title(stream_title_pre)
+        # TrackInfo direkt aus den bereits getrennten Feldern bauen — kein Re-Split,
+        # damit ein ' - ' im Künstlernamen nicht zu falschem artist/title führt.
+        track_pre = TrackInfo(
+            stream_title=f"{fp_result.artist} - {fp_result.title}",
+            artist=fp_result.artist,
+            title=fp_result.title,
+        )
 
         # deezer_attempted unterscheidet "Deezer angerufen, kein Treffer" (→ löschen)
         # von "Deezer gar nicht versucht / Exception" (→ überspringen, API evtl. down)
@@ -586,16 +619,56 @@ class FileProcessor:
                     deezer_data = None
                     deezer_cover = None
             result = corrected
-        stream_title = f"{result.artist} - {result.title}"
-        track = TrackInfo.from_stream_title(stream_title)
+        # TrackInfo direkt aus den korrigierten Feldern bauen — kein Re-Split.
+        track = TrackInfo(
+            stream_title=f"{result.artist} - {result.title}",
+            artist=result.artist,
+            title=result.title,
+        )
 
-        # ── Phase 5: Zielpfad + Score-Entscheidung (Katalog-basiert + Pfad-Fallback) ──
+        # ── Phase 5-10: unter recording_id-Lock -- verhindert Race Condition ──
+        # Zwei Worker die denselben Song gleichzeitig verarbeiten würden sonst beide
+        # "kein Duplikat" lesen und beide schreiben. Der Lock serialisiert die
+        # kritische Sequenz: Duplikat-Prüfung → Move → DB-Upsert.
+        recording_lock = self._recording_locks.setdefault(result.recording_id, asyncio.Lock())
+        async with recording_lock:
+            await self._process_critical_section(
+                result=result,
+                track=track,
+                enriched=enriched,
+                mb_data=mb_data,
+                deezer_data=deezer_data,
+                deezer_cover=deezer_cover,
+                cover_from_caa=cover_from_caa,
+                cover_from_enrich=cover_from_enrich,
+                deezer_attempted=deezer_attempted,
+                work_path=work_path,
+                artist_image=artist_image,
+                lyrics=lyrics,
+            )
+
+    async def _process_critical_section(
+        self,
+        *,
+        result: FingerprintResult,
+        track: TrackInfo,
+        enriched: EnrichedInfo | None,
+        mb_data: MusicBrainzData | None,
+        deezer_data: Any,
+        deezer_cover: bytes | None,
+        cover_from_caa: bytes | None,
+        cover_from_enrich: bytes | None,
+        deezer_attempted: bool,
+        work_path: Path,
+        artist_image: bytes | None,
+        lyrics: str | None,
+    ) -> None:
+        """Kritischer Abschnitt unter recording_id-Lock: Duplikat-Prüfung, Move, Tagging, DB-Upsert."""
         provenance, final_path, delete_old = await self._compute_destination_and_score(
             result,
             track,
             enriched,
             work_path,
-            mb_data=mb_data,
         )
         if final_path is None:  # bestehende Datei hat besseren Score
             self._cleanup_file(work_path)
@@ -607,23 +680,7 @@ class FileProcessor:
             self._cleanup_file(work_path)
             return
 
-        # ── Phase 7: Live-Ausschluss + Popularitäts-Prüfung (Deezer-Rank) ──
-        release_group_type = mb_data.release_group_type if mb_data else None
-        if should_exclude_as_live(
-            release_group_type,
-            result.title,
-            self._settings.exclude_release_group_types,
-            self._settings.exclude_title_patterns,
-        ):
-            self._log.info(
-                "[DELETE] %s — Grund: Live/Bootleg ausgeschlossen (rg_type=%s, title=%s)",
-                stage_path.name,
-                release_group_type,
-                result.title,
-            )
-            safe_unlink(stage_path)
-            return
-
+        # ── Phase 7: Popularitäts-Prüfung (Deezer-Rank) ──
         if self._settings.min_popularity_rank > 0 and (result.artist or result.title):
             if deezer_attempted and deezer_data is None:
                 # Deezer angerufen, 0 Treffer → "nicht auf Deezer" → löschen
@@ -772,7 +829,7 @@ class FileProcessor:
         try:
             await self._catalog.upsert(rec)
         except Exception:
-            self._log.debug("[%s] Katalog-Upsert fehlgeschlagen: %s", self._name, final_path)
+            self._log.warning("[%s] Katalog-Upsert fehlgeschlagen: %s", self._name, final_path)
 
     async def _maybe_evict(self, new_rank: int | None, *, final_path: Path) -> None:
         """Verdrängt das unpopulärste Lied, wenn das Sammlungslimit erreicht ist."""

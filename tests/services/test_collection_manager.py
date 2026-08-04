@@ -7,7 +7,6 @@ from radio_ripper.services.collection_manager import (
     is_better_version,
     is_same_version,
     pick_eviction_candidate,
-    should_exclude_as_live,
 )
 
 # ── is_same_version ────────────────────────────────────────────────────────
@@ -64,38 +63,6 @@ class TestIsBetterVersion:
     def test_none_bitrate_treated_as_zero(self):
         assert is_better_version(0.90, None, 44100, 0.90, None, 44100) is False
         assert is_better_version(0.90, 64, 44100, 0.90, None, 44100)
-
-
-# ── should_exclude_as_live ──────────────────────────────────────────────────
-
-
-class TestShouldExcludeAsLive:
-    def test_release_group_type_live_excluded(self):
-        assert should_exclude_as_live("Live", "Some Song", ["Live", "Bootleg"], [])
-
-    def test_release_group_type_bootleg_excluded(self):
-        assert should_exclude_as_live("Bootleg", "Track", ["Live", "Bootleg"], [])
-
-    def test_release_group_type_album_not_excluded(self):
-        assert not should_exclude_as_live("Album", "Track", ["Live", "Bootleg"], [])
-
-    def test_release_group_type_none_not_excluded(self):
-        assert not should_exclude_as_live(None, "Track", ["Live"], [])
-
-    def test_title_pattern_live_in_paren_excluded(self):
-        assert should_exclude_as_live("Album", "Song (Live)", [], ["(live"])
-
-    def test_title_pattern_live_at_excluded(self):
-        assert should_exclude_as_live("Album", "Live at Wembley", ["Live"], ["live at"])
-
-    def test_title_pattern_case_insensitive(self):
-        assert should_exclude_as_live("Album", "LIVE AT", [], ["live at"])
-
-    def test_no_patterns_no_exclusion(self):
-        assert not should_exclude_as_live("Album", "Song (Live)", [], [])
-
-    def test_empty_exclude_types_and_patterns(self):
-        assert not should_exclude_as_live("Live", "Song", [], [])
 
 
 # ── pick_eviction_candidate ─────────────────────────────────────────────────

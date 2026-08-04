@@ -9,6 +9,12 @@ from pathlib import Path
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Linux-Limit pro Pfad-Segment: 255 Bytes (UTF-8).
+# Wir reservieren 4 Bytes für ".mp3" → max 251 Bytes für den Basis-Dateinamen.
+_MAX_FILENAME_BYTES = 251
+# Einzelne Komponenten (Artist, Title) auf 120 Zeichen begrenzen.
+_MAX_COMPONENT_CHARS = 120
+
 
 def sanitize_filename(name: str | None) -> str:
     if name is None:
@@ -21,9 +27,19 @@ def sanitize_filename(name: str | None) -> str:
     name = _WHITESPACE_RE.sub(" ", name).strip()
     if not name:
         return "unknown"
-    if len(name) > 200:
-        name = name[:200].strip()
+    if len(name) > _MAX_COMPONENT_CHARS:
+        name = name[:_MAX_COMPONENT_CHARS].strip()
     return name or "unknown"
+
+
+def _fit_to_byte_limit(stem: str, limit: int = _MAX_FILENAME_BYTES) -> str:
+    """Kürzt *stem* so, dass ``stem.encode('utf-8')`` ≤ *limit* Bytes lang ist."""
+    encoded = stem.encode("utf-8")
+    if len(encoded) <= limit:
+        return stem
+    # Byteweise kürzen und dann sauber als UTF-8 dekodieren
+    truncated = encoded[:limit]
+    return truncated.decode("utf-8", errors="ignore").rstrip()
 
 
 def compute_file_path(
@@ -36,12 +52,13 @@ def compute_file_path(
 ) -> Path:
     """Berechnet den Zielpfad: Künstler[/Album]/Künstler - Titel.mp3"""
     if artist and title:
-        artist_dir = sanitize_filename(artist)
-        base = f"{sanitize_filename(artist)} - {sanitize_filename(title)}"
+        artist_san = sanitize_filename(artist)
+        title_san = sanitize_filename(title)
+        base = _fit_to_byte_limit(f"{artist_san} - {title_san}")
     else:
-        artist_dir = "Unknown"
-        base = sanitize_filename(stream_title_clean)
-    parent = destination / artist_dir / sanitize_filename(album) if album else destination / artist_dir
+        artist_san = "Unknown"
+        base = _fit_to_byte_limit(sanitize_filename(stream_title_clean))
+    parent = destination / artist_san / sanitize_filename(album) if album else destination / artist_san
     return parent / f"{base}.mp3"
 
 

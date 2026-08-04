@@ -44,6 +44,13 @@ class TestLoadSettings:
         with pytest.raises(ConfigurationError):
             load_settings(path)
 
+    def test_jsonc_comments_are_ignored(self, tmp_path: Path):
+        text = '// ein Kommentar\n{"destination": "./rec"} // trailing'
+        p = tmp_path / "config.jsonc"
+        p.write_text(text, encoding="utf-8")
+        s = load_settings(p)
+        assert isinstance(s, Settings)
+
     def test_invalid_log_level(self, tmp_path: Path):
         cfg = dict(GOOD_BASE, log_level="INVALID")
         path = _write_config(tmp_path, cfg)
@@ -66,37 +73,22 @@ class TestCollectionManagementDefaults:
     def test_defaults_apply(self, tmp_path: Path):
         path = _write_config(tmp_path, GOOD_BASE)
         s = load_settings(path)
-        assert s.catalog_db == Path("./work/catalog.db")
         assert s.reconcile_on_startup is True
         assert s.max_collection_size == 0
         assert s.enable_eviction is False
-        assert s.exclude_release_group_types == ["Live", "Bootleg"]
-        assert s.exclude_title_patterns == []
 
     def test_collection_fields_parsed(self, tmp_path: Path):
         cfg = dict(
             GOOD_BASE,
-            catalog_db="./custom.db",
             reconcile_on_startup=False,
             max_collection_size=10000,
             enable_eviction=True,
-            exclude_release_group_types=["Live", "Bootleg", "Compilation"],
-            exclude_title_patterns=["(live", "live at"],
         )
         path = _write_config(tmp_path, cfg)
         s = load_settings(path)
-        assert s.catalog_db == Path("./custom.db")
         assert s.reconcile_on_startup is False
         assert s.max_collection_size == 10000
         assert s.enable_eviction is True
-        assert s.exclude_release_group_types == ["Live", "Bootleg", "Compilation"]
-        assert s.exclude_title_patterns == ["(live", "live at"]
-
-    def test_catalog_db_expanded(self, tmp_path: Path):
-        cfg = dict(GOOD_BASE, catalog_db="~/music_cat.db")
-        path = _write_config(tmp_path, cfg)
-        s = load_settings(path)
-        assert s.catalog_db == Path("~/music_cat.db").expanduser()
 
     def test_invalid_max_collection_size(self, tmp_path: Path):
         cfg = dict(GOOD_BASE, max_collection_size=-1)

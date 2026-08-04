@@ -418,6 +418,11 @@ class ID3Tagger(TrackTagger):
         audio.delall("TXXX:AcoustID Score")
         audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
 
+        # ── Deezer Popularity Rank (wird beim Reconcile aus dem Tag zurückgelesen) ──
+        if deezer and deezer.rank is not None:
+            audio.delall("TXXX:Deezer Popularity Rank")
+            audio.add(TXXX(encoding=3, desc="Deezer Popularity Rank", text=str(deezer.rank)))
+
         if mb_data is not None:
             mbs: str | None
             for tag_key, mbs, desc in (

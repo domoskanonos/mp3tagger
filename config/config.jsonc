@@ -1,0 +1,66 @@
+{
+  // ── Verzeichnisse ──────────────────────────────────────────────────────────
+  //
+  // Quellverzeichnis: hier legt der Recorder die rohen MP3s ab.
+  "source": "/app/source",
+  //
+  // Zielverzeichnis: fertig getaggte MP3s werden hier abgelegt (Artist/Album/...).
+  "destination": "/app/destination",
+  //
+  // Arbeitsverzeichnis: Staging-Bereich während der Verarbeitung.
+  // Hier liegen auch catalog.db und das Logfile.
+  "work_dir": "/app/work",
+
+  // ── Fingerprinting ─────────────────────────────────────────────────────────
+  //
+  // Minimaler AcoustID-Konfidenzwert (0.0–1.0). Dateien unter diesem Wert
+  // werden verworfen. 0.85 ist ein guter Ausgangswert.
+  "acoustid_min_score": 0.85,
+
+  // ── Popularität ────────────────────────────────────────────────────────────
+  //
+  // Minimaler Deezer-Popularitätsrang. Songs mit einem Rang unterhalb dieses
+  // Wertes werden gelöscht (je größer der Wert, desto strenger der Filter).
+  // 0 = deaktiviert, alle Songs werden akzeptiert.
+  "min_popularity_rank": 100000,
+
+  // ── Metadaten & Cover ──────────────────────────────────────────────────────
+  //
+  // Cover-Quellen in Prioritätsreihenfolge: Deezer → Cover Art Archive → iTunes.
+  // enable_coverartarchive: aktiviert MusicBrainz Cover Art Archive als zweite
+  // Cover-Quelle. Deaktivieren bedeutet auch: kein MusicBrainz-Lookup (ISRC,
+  // Genres, Labelinfo gehen verloren).
+  "enable_coverartarchive": true,
+  //
+  // HTTP-Timeout für Metadaten-Anfragen (iTunes, MusicBrainz) in Sekunden.
+  "metadata_timeout": 8.0,
+  //
+  // HTTP-Timeout für Cover-Downloads (Deezer, Cover Art Archive) in Sekunden.
+  "cover_timeout": 15.0,
+
+  // ── Parallelität ───────────────────────────────────────────────────────────
+  //
+  // Maximale Anzahl gleichzeitig verarbeiteter Dateien (1–20).
+  "max_concurrent": 3,
+
+  // ── Logging ────────────────────────────────────────────────────────────────
+  //
+  // Log-Level: DEBUG | INFO | WARNING | ERROR | CRITICAL
+  "log_level": "INFO",
+
+  // ── Katalog & Sammlung ─────────────────────────────────────────────────────
+  //
+  // Beim Start: Katalog (SQLite) mit dem Dateisystem abgleichen.
+  // Verwaiste DB-Einträge werden entfernt, neue Dateien im Zielverzeichnis
+  // werden in den Katalog aufgenommen.
+  "reconcile_on_startup": true,
+  //
+  // Maximale Sammlungsgröße in Anzahl Songs. 0 = unbegrenzt.
+  // Wenn das Limit erreicht ist und enable_eviction aktiv ist, wird der
+  // unpopulärste Song verdrängt.
+  "max_collection_size": 0,
+  //
+  // Eviction: wenn true und max_collection_size > 0, wird bei vollem Limit
+  // automatisch der unpopulärste Song gelöscht um Platz für den neuen zu machen.
+  "enable_eviction": false
+}

@@ -37,9 +37,10 @@ def _find_config(cfg_arg: str | None) -> Path | None:
             return p
 
     candidates = [
-        Path("config.json"),
-        Path.home() / ".config" / "radio-ripper" / "config.json",
-        Path("/app/config/config.json"),
+        Path("config/config.jsonc"),
+        Path("config.jsonc"),
+        Path.home() / ".config" / "radio-ripper" / "config.jsonc",
+        Path("/app/config/config.jsonc"),
     ]
     for c in candidates:
         if c.is_file():
@@ -108,7 +109,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
 
     deezer_provider = DeezerMetadataProvider(client, timeout=settings.cover_timeout)
 
-    catalog = SqliteCatalog(settings.catalog_db)
+    catalog = SqliteCatalog(settings.work_dir / "catalog.db")
     if settings.reconcile_on_startup:
         logger.info("[Startup] Reconcile Katalog ⇄ Dateisystem ...")
         report = await catalog.reconcile_with_filesystem(settings.destination)

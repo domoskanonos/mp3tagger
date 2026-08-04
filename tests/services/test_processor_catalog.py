@@ -18,7 +18,6 @@ import pytest
 from radio_ripper.domain.models import (
     EnrichedInfo,
     FingerprintResult,
-    MusicBrainzData,
     TrackInfo,
 )
 from radio_ripper.infra.catalog import SongRecord, SqliteCatalog
@@ -33,7 +32,6 @@ def _settings(tmp_path: Path, **overrides: Any) -> Settings:
         work_dir=tmp_path / "work",
         source=tmp_path / "inbox",
         min_popularity_rank=0,
-        catalog_db=tmp_path / "catalog.db",
     )
     defaults.update(overrides)
     return Settings.model_validate(defaults)
@@ -91,13 +89,11 @@ class TestCatalogVersionReplace:
         proc = _make_processor(tmp_path, catalog=catalog)
         result = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        mb_data = MusicBrainzData(recording_id="r1", isrcs=("ISRC1",))
         _, final_path, delete_old = await proc._compute_destination_and_score(
             result,
             track,
             None,
             tmp_path / "work.mp3",
-            mb_data=mb_data,
         )
         assert delete_old is not None and Path(delete_old) == old_path
         assert final_path is not None
@@ -124,19 +120,17 @@ class TestCatalogVersionReplace:
         # Neue Version: schlechterer Score (gleiche MBID + ISRC → same version)
         result = FingerprintResult(artist="A", title="T", score=0.80, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        mb_data = MusicBrainzData(recording_id="r1", isrcs=("ISRC1",))
         provenance, final_path, _ = await proc._compute_destination_and_score(
             result,
             track,
             None,
             tmp_path / "work.mp3",
-            mb_data=mb_data,
         )
         # Katalog entscheidet: bestehende ist besser → neue verwerfen
         assert provenance == "" and final_path is None
 
-    async def test_catalog_skip_when_no_isrc_both_versions_kept(self, tmp_path: Path, catalog: SqliteCatalog):
-        # Alte Version ohne ISRC unter anderem Pfad → is_same_version = False
+    async def test_catalog_skip_when_no_isrc_new_worse_score(self, tmp_path: Path, catalog: SqliteCatalog):
+        # Alte Version ohne ISRC unter anderem Pfad, höherer Score → neue wird verworfen
         old_path = tmp_path / "out" / "A" / "OldAlbum" / "A - T.mp3"
         old_path.parent.mkdir(parents=True)
         old_path.write_bytes(b"\xff\xfb\x00")
@@ -155,31 +149,14 @@ class TestCatalogVersionReplace:
         proc = _make_processor(tmp_path, catalog=catalog)
         result = FingerprintResult(artist="A", title="T", score=0.80, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        mb_data = MusicBrainzData(recording_id="r1", isrcs=())  # keine ISRC
-        # final_path existiert nicht → kein Pfad-Fallback → keine Ersetzung, beide bleiben
+        # Neue Version ist schlechter → wird verworfen (gleiche recording_id genügt für Vergleich)
         provenance, final_path, _ = await proc._compute_destination_and_score(
             result,
             track,
             None,
             tmp_path / "work.mp3",
-            mb_data=mb_data,
         )
-        assert provenance == "tag/tag"
-        assert final_path is not None
-
-
-class TestLiveExclusion:
-    """Phase 7 — Live-Ausschluss via exclude_release_group_types."""
-
-    async def test_live_album_rejected(self):
-        from radio_ripper.services.collection_manager import should_exclude_as_live
-
-        assert should_exclude_as_live("Live", "T", ["Live", "Bootleg"], [])
-
-    async def test_album_passes(self, tmp_path: Path, catalog: SqliteCatalog):
-        from radio_ripper.services.collection_manager import should_exclude_as_live
-
-        assert not should_exclude_as_live("Album", "T", ["Live", "Bootleg"], [])
+        assert provenance == "" and final_path is None
 
 
 class TestEviction:
@@ -349,14 +326,13 @@ class TestCatalogUpsert:
         final_path.parent.mkdir(parents=True, exist_ok=True)
         final_path.write_bytes(b"\xff\xfb" + b"\x00" * 100)
         result = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
-        mb_data = MusicBrainzData(recording_id="r1", isrcs=("ISRC1",))
         enriched = EnrichedInfo(artist="A", title="T", album="MyAlbum")
         deezer = DeezerData(rank=50000, isrc="ISRC1", cover_bytes=None, album="MyAlbum")
         with patch(
             "radio_ripper.services.processor.read_audio_from_file",
             return_value={"bitrate": 320, "sample_rate": 44100, "duration_ms": 200000},
         ):
-            await proc._catalog_upsert(final_path, result, mb_data, enriched, deezer, has_cover=True)
+            await proc._catalog_upsert(final_path, result, None, enriched, deezer, has_cover=True)
         records = await catalog.list_all()
         assert len(records) == 1
         r = records[0]

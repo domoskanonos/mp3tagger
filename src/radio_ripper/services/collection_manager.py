@@ -3,7 +3,6 @@
 Hier leben die Entscheidungen:
   * Sind zwei MP3s dieselbe Version?           → :func:`is_same_version`
   * Welche Version ist qualitativ besser?     → :func:`is_better_version`
-  * Soll ein Song als Live/Bootleg aussortiert werden? → :func:`should_exclude_as_live`
   * Welcher Song wird bei vollem Sammlungslimit verdrängt? → :func:`pick_eviction_candidate`
 
 Alle Funktionen sind deterministisch und tokenseitig frei (keine I/O, keine
@@ -68,29 +67,6 @@ def is_better_version(
     return (new_sample_rate or 0) > (old_sample_rate or 0)
 
 
-# ── Live-Ausschluss ─────────────────────────────────────────────────────────
-
-
-def should_exclude_as_live(
-    release_group_type: str | None,
-    title: str,
-    exclude_types: list[str],
-    exclude_patterns: list[str],
-) -> bool:
-    """``True``, wenn der Song als Live/Bootleg aussortiert werden soll.
-
-    Prüfung:
-      1. ``release_group_type`` ∈ ``exclude_types`` (case-insensitiv).
-      2. ``title`` enthält einen Substring aus ``exclude_patterns`` (case-insensitiv).
-    """
-    if release_group_type:
-        rgt_lower = release_group_type.lower()
-        if any(rgt_lower == t.lower() for t in exclude_types):
-            return True
-    title_lower = title.lower()
-    return any(p.lower() in title_lower for p in exclude_patterns)
-
-
 # ── Eviction ────────────────────────────────────────────────────────────────
 
 
@@ -120,5 +96,4 @@ __all__ = [
     "is_better_version",
     "is_same_version",
     "pick_eviction_candidate",
-    "should_exclude_as_live",
 ]
