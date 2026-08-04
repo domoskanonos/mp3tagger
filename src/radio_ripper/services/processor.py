@@ -738,6 +738,12 @@ class FileProcessor:
 
         # ── Phase 8: Tag-Write (Cover: Deezer → CAA → iTunes) ──
         final_cover = deezer_cover or cover_from_caa or cover_from_enrich
+        if final_cover is None:
+            self._log.warning(
+                "[%s] Kein Cover für %s gefunden (Deezer/CAA/iTunes lieferten nichts)",
+                self._name,
+                stage_path.name,
+            )
 
         last_exc: Exception | None = None
         for attempt in range(1, _TAG_WRITE_MAX_ATTEMPTS + 1):

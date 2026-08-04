@@ -63,8 +63,10 @@ class DeezerMetadataProvider(DeezerProvider):
                 timeout=self._timeout,
             )
         except Exception:
+            # Netzwerk-/HTTP-Fehler weiterreichen: der Processor unterscheidet
+            # damit "API down" von "nicht auf Deezer" und löscht die Datei NICHT.
             _log.debug("Deezer search failed: %s / %s", artist, title)
-            return None
+            raise
         tracks: list[dict[str, Any]] = (payload or {}).get("data") or []
         if not tracks:
             return None

@@ -29,7 +29,8 @@ class TestID3Tagger:
         audio = ID3(f)
         assert (f1 := audio.get("TPE1")) is not None and f1.text == ["Adele"]
         assert (f2 := audio.get("TIT2")) is not None and f2.text == ["Hello"]
-        assert (f3 := audio.get("TALB")) is not None and f3.text == ["Hello"]
+        # Ohne Album-Quelle wird KEIN Dummy-Album (Track-Titel) geschrieben
+        assert audio.get("TALB") is None
         assert (f4 := audio.get("COMM::eng")) is not None and f4.text == ["Recorded via radiostream"]
         assert (f5 := audio.get("TXXX:RIPPEDBY")) is not None and f5.text == ["Rock@http://x"]
         assert (f6 := audio.get("TXXX:AcoustID Score")) is not None and f6.text == ["0.0"]

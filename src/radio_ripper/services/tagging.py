@@ -292,14 +292,13 @@ class ID3Tagger(TrackTagger):
         if track.title:
             _set_frame("TIT2", TIT2, track.title)
 
-        # Album: deezer → enriched → mb_data → track-Titel → vorhanden
+        # Album: deezer → enriched → mb_data (kein Dummy-Fallback —
+        # ohne echte Quelle bleibt TALB ehrlich leer statt des Track-Titels).
         album = deezer.album if deezer else None
         if not album:
             album = enriched.album
         if not album and mb_data and mb_data.release_title:
             album = mb_data.release_title
-        if not album:
-            album = track.title or track.stream_title
         if album:
             _set_frame("TALB", TALB, album)
 

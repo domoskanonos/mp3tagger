@@ -19,6 +19,7 @@ from radio_ripper.infra.resilience import retry_async
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 
 _PARENS_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
+_ARTWORK_SIZE_RE = re.compile(r"\d+x\d+(?:bb|cc)?(?=\.(?:jpg|jpeg|png|webp))")
 
 
 def _strip_parens(text: str) -> str:
@@ -127,13 +128,12 @@ class ITunesMetadataProvider(MetadataProvider):
 
     @staticmethod
     def _upgrade_artwork(url: str) -> str:
-        """Erhöht die iTunes-Thumbnail-Auflösung von 100px/60px auf 600px."""
-        return (
-            url.replace("100x100bb", "600x600bb")
-            .replace("60x60bb", "600x600bb")
-            .replace("100x100", "600x600")
-            .replace("60x60", "600x600")
-        )
+        """Erhöht die iTunes-Thumbnail-Auflösung auf 600px.
+
+        Behandelt beliebige Größen-Token wie ``100x100bb``, ``100x100cc``,
+        ``60x60bb``, ``55x55`` etc. — nicht nur feste Varianten.
+        """
+        return _ARTWORK_SIZE_RE.sub("600x600bb", url)
 
 
 __all__ = [

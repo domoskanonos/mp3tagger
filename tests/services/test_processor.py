@@ -675,3 +675,39 @@ class TestProcessFileFailurePaths:
         expected = proc._settings.destination / "MBCorrectedArtist" / "MBCorrectedArtist - MBCorrectedTitle.mp3"
         assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
         assert not list(proc._temp_dir.rglob("*.mp3"))
+
+    async def test_deezer_primary_network_error_does_not_delete(self, tmp_path: Path):
+        """Netzwerkfehler beim primären Deezer-Fetch darf die Datei NICHT löschen.
+
+        DeezerMetadataProvider.fetch() re-raised Netzwerkfehler → der Processor
+        setzt deezer_attempted=False → die Popularitäts-Prüfung überspringt und
+        löscht die Datei nicht als "nicht auf Deezer".
+        """
+        proc = _make_processor(tmp_path, min_popularity_rank=100)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
+        )
+        proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        # Deezer-API down → fetch wirft (kein None!)
+        deezer = AsyncMock()
+        deezer.fetch.side_effect = RuntimeError("network down")
+        proc._deezer_provider = deezer
+
+        await proc._process_one(mp3)
+
+        # Datei darf NICHT gelöscht sein → landet verarbeitet in destination
+        expected = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        assert not list(proc._temp_dir.rglob("*.mp3"))
