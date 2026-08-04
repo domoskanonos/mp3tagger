@@ -25,6 +25,8 @@ class DeezerPopularityChecker(PopularityProvider):
     """Holt Künstler-Bilder über die öffentliche Deezer-Suche."""
 
     _ARTIST_SEARCH_URL = "https://api.deezer.com/search/artist"
+    # Beste zuerst — größtes verfügbares Bild bevorzugen.
+    _PICTURE_KEYS = ("picture_xl", "picture_big", "picture_medium", "picture")
 
     def __init__(self, client: AsyncHttpClient, *, timeout: float = 5.0) -> None:
         self._client = client
@@ -37,7 +39,7 @@ class DeezerPopularityChecker(PopularityProvider):
         try:
             payload = await self._client.get_json(
                 self._ARTIST_SEARCH_URL,
-                params={"q": artist, "limit": 1},
+                params={"q": artist, "limit": 5},
                 timeout=self._timeout,
             )
         except Exception:
@@ -45,13 +47,21 @@ class DeezerPopularityChecker(PopularityProvider):
         data = payload.get("data") if isinstance(payload, dict) else None
         if not data:
             return None
-        picture_url = data[0].get("picture_medium") or data[0].get("picture")
-        if not picture_url:
-            return None
-        try:
-            return await self._client.get_bytes(picture_url, timeout=self._timeout)
-        except Exception:
-            return None
+        # Mehrere Kandidaten durchgehen, bis ein Bild heruntergeladen werden kann.
+        for artist_data in data:
+            if not isinstance(artist_data, dict):
+                continue
+            picture_url = next(
+                (artist_data[key] for key in self._PICTURE_KEYS if artist_data.get(key)),
+                None,
+            )
+            if not picture_url:
+                continue
+            try:
+                return await self._client.get_bytes(picture_url, timeout=self._timeout)
+            except Exception:
+                continue
+        return None
 
 
 __all__ = [

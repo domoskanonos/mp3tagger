@@ -605,6 +605,7 @@ class TestEnrichExistingFiles:
             genre="Rock",
         )
         proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
         proc._cover_provider.fetch_recording_data.return_value = None

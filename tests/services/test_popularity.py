@@ -37,3 +37,26 @@ class TestDeezerPopularityChecker:
         checker = DeezerPopularityChecker(client)
         result = await checker.fetch_artist_image("Dr. Dre")
         assert result is None
+
+    async def test_fetch_artist_image_tries_multiple_candidates(self):
+        """Erster Kandidat ohne Bild wird übersprungen, zweiter liefert das Bild."""
+        client = AsyncMock()
+        client.get_json = AsyncMock(
+            return_value={"data": [{"name": "Falscher"}, {"name": "Richtiger", "picture_medium": "http://img.jpg"}]}
+        )
+        client.get_bytes = AsyncMock(return_value=b"image_data")
+        checker = DeezerPopularityChecker(client)
+        result = await checker.fetch_artist_image("Dr. Dre")
+        assert result == b"image_data"
+
+    async def test_fetch_artist_image_prefers_large_picture(self):
+        """picture_xl wird vor picture_medium bevorzugt."""
+        client = AsyncMock()
+        client.get_json = AsyncMock(
+            return_value={"data": [{"picture_medium": "http://medium.jpg", "picture_xl": "http://xl.jpg"}]}
+        )
+        client.get_bytes = AsyncMock(return_value=b"image_data")
+        checker = DeezerPopularityChecker(client)
+        result = await checker.fetch_artist_image("Dr. Dre")
+        assert result == b"image_data"
+        client.get_bytes.assert_awaited_once_with("http://xl.jpg", timeout=checker._timeout)

@@ -137,13 +137,13 @@ def correct_fingerprint_result(
 
 
 async def _fetch_artist_image(
-    popularity_provider: PopularityProvider,
+    provider: PopularityProvider | MetadataProvider,
     artist: str,
     station_name: str,
     logger: logging.Logger,
 ) -> bytes | None:
     try:
-        img = await popularity_provider.fetch_artist_image(artist)
+        img = await provider.fetch_artist_image(artist)
         if img is not None:
             return img
     except Exception as exc:
@@ -578,14 +578,24 @@ class FileProcessor:
 
         async def _fetch_art_img() -> None:
             nonlocal artist_image
-            if not self._popularity or not result.artist:
+            if not result.artist:
                 return
-            artist_image = await _fetch_artist_image(
-                self._popularity,
-                result.artist,
-                self._name,
-                self._log,
-            )
+            # Deezer zuerst, dann iTunes als Fallback — so fehlen deutlich
+            # weniger Künstlerbilder (Deezer-Suche ist nicht immer vollständig).
+            if self._popularity:
+                artist_image = await _fetch_artist_image(
+                    self._popularity,
+                    result.artist,
+                    self._name,
+                    self._log,
+                )
+            if artist_image is None:
+                artist_image = await _fetch_artist_image(
+                    self._metadata,
+                    result.artist,
+                    self._name,
+                    self._log,
+                )
 
         await asyncio.gather(_fetch_itunes(), _fetch_lyr(), _fetch_art_img())
         return enriched, cover_from_enrich, artist_image, lyrics
