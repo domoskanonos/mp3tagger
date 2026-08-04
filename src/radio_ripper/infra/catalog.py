@@ -190,6 +190,7 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
             "artist": None,
             "title": None,
             "album": None,
+            "genre": None,
             "acoustid_score": None,
             "has_cover": False,
         }
@@ -201,17 +202,20 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
             "artist": None,
             "title": None,
             "album": None,
+            "genre": None,
             "acoustid_score": None,
             "has_cover": False,
         }
 
-    artist = title = album = None
+    artist = title = album = genre = None
     if "TPE1" in tags and tags["TPE1"].text:
         artist = str(tags["TPE1"].text[0])
     if "TIT2" in tags and tags["TIT2"].text:
         title = str(tags["TIT2"].text[0])
     if "TALB" in tags and tags["TALB"].text:
         album = str(tags["TALB"].text[0])
+    if "TCON" in tags and tags["TCON"].text:
+        genre = str(tags["TCON"].text[0])
 
     isrc = None
     if "TSRC" in tags and tags["TSRC"].text:
@@ -240,6 +244,7 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
         "artist": artist,
         "title": title,
         "album": album,
+        "genre": genre,
         "acoustid_score": acoustid_score,
         "popularity_rank": popularity_rank,
         "has_cover": has_cover,

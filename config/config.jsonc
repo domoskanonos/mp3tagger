@@ -49,6 +49,11 @@
   // werden in den Katalog aufgenommen.
   "reconcile_on_startup": true,
   //
+  // Nach dem Reconcile fehlende Tags/Cover (Album, Genre, Cover, recording_id)
+  // in Bestandsdateien vervollständigen — gleicher Anreicherungs-Flow wie bei
+  // neuen MP3s. Nur Dateien mit fehlenden Feldern werden verarbeitet.
+  "enrich_missing_tags_on_startup": false,
+  //
   // Maximale Sammlungsgröße in Anzahl Songs. 0 = unbegrenzt.
   // Wenn das Limit erreicht ist und enable_eviction aktiv ist, wird der
   // unpopulärste Song verdrängt.

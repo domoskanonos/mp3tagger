@@ -30,6 +30,10 @@ class Settings(BaseModel):
 
     # ── Collection-Management ───────────────────────────────────────────────
     reconcile_on_startup: bool = True
+    # Vervollständigt nach dem Reconcile fehlende Tags/Cover in Bestandsdateien
+    # (gleicher Anreicherungs-Flow wie bei neuen MP3s). Nur Dateien mit fehlenden
+    # Feldern werden verarbeitet.
+    enrich_missing_tags_on_startup: bool = False
     max_collection_size: int = Field(
         default=0, ge=0, description="0=disabled. >0 aktiviert Größenlimit + Eviction-Logik"
     )

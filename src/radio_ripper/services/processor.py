@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,23 @@ _TAG_WRITE_MAX_ATTEMPTS = 3
 _TAG_WRITE_BASE_DELAY = 0.5
 
 # ── helpers ──
+
+
+@dataclass(slots=True)
+class CollectedMetadata:
+    """Gemeinsames Ergebnis der Anreicherung (Phase 3+4) — für neue und Bestandsdateien."""
+
+    result: FingerprintResult
+    track: TrackInfo
+    enriched: EnrichedInfo | None
+    mb_data: MusicBrainzData | None
+    deezer_data: DeezerData | None
+    deezer_cover: bytes | None
+    cover_from_caa: bytes | None
+    cover_from_enrich: bytes | None
+    deezer_attempted: bool
+    artist_image: bytes | None
+    lyrics: str | None
 
 
 def _strip_untested_suffix(
@@ -190,6 +209,17 @@ async def _fetch_lyrics(
         return None
 
 
+def _log_progress(logger: logging.Logger, done: int, total: int, label: str) -> None:
+    """Loggt einen Fortschrittsbalken (ASCII) bei jedem Prozentpunktwechsel."""
+    if total <= 0:
+        return
+    pct = done * 100 // total
+    bar_width = 20
+    filled = round(pct * bar_width / 100)
+    bar = "#" * filled + "-" * (bar_width - filled)
+    logger.info("[%s] %3d%% |%s| %d/%d", label, pct, bar, done, total)
+
+
 # ── processor ──
 
 
@@ -313,6 +343,125 @@ class FileProcessor:
 
         tasks = [asyncio.create_task(_gated_process(mp3)) for mp3 in mp3s]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def enrich_existing_files(self) -> None:
+        """Vervollständigt fehlende Tags/Cover in Bestandsdateien (destination/).
+
+        Läuft NACH dem Reconcile und nur für Dateien, bei denen wirklich etwas
+        fehlt (Album, Genre, Cover oder recording_id) — gleicher Anreicherungs-
+        und Tag-Flow wie bei neuen MP3s. Es wird NIE gelöscht.
+        """
+        destination = self._settings.destination
+        if not destination.exists():
+            return
+
+        candidates: list[Path] = []
+        for path in sorted(destination.rglob("*.mp3")):
+            try:
+                tags = await asyncio.to_thread(read_tags_from_file, path)
+            except Exception:
+                self._log.debug("[%s] Tags nicht lesbar, überspringe: %s", self._name, path)
+                continue
+            missing = not tags.get("album") or not tags.get("genre") or not tags.get("has_cover")
+            if missing:
+                candidates.append(path)
+
+        if not candidates:
+            self._log.info("[%s] Keine Bestandsdateien mit fehlenden Tags gefunden.", self._name)
+            return
+
+        self._log.info(
+            "[%s] Vervollständige fehlende Tags für %d Bestandsdateien ...",
+            self._name,
+            len(candidates),
+        )
+        done = 0
+        _log_progress(self._log, 0, len(candidates), self._name)
+
+        async def _gated(path: Path) -> None:
+            nonlocal done
+            async with self._semaphore:
+                try:
+                    await self._enrich_existing_file(path)
+                except Exception:
+                    self._log.exception("[%s] Fehler bei Bestandsdatei %s", self._name, path.name)
+                finally:
+                    done += 1
+                    _log_progress(self._log, done, len(candidates), self._name)
+
+        await asyncio.gather(*(_gated(p) for p in candidates), return_exceptions=True)
+        self._log.info("[%s] Vervollständigung abgeschlossen (%d Dateien).", self._name, len(candidates))
+
+    async def _enrich_existing_file(self, path: Path) -> None:
+        """Reichert eine Bestandsdatei an und schreibt fehlende Tags in-place.
+
+        Nutzt den GLEICHEN Flow wie neue MP3s (_collect_metadata + _write_tags),
+        aber ohne Fingerprint, ohne Duplikat-/Popularitätsprüfung und ohne Löschen.
+        Schreiben erfolgt über eine Staging-Kopie + atomaren os.replace.
+        """
+        tags = await asyncio.to_thread(read_tags_from_file, path)
+        recording_id = tags.get("recording_id") or ""
+        artist = tags.get("artist") or ""
+        title = tags.get("title") or ""
+        score = tags.get("acoustid_score")
+        if not artist or not title:
+            self._log.info(
+                "[%s] Kein Künstler/Titel in %s — kann nicht anreichern, übersprungen",
+                self._name,
+                path.name,
+            )
+            return
+
+        result = FingerprintResult(
+            artist=artist,
+            title=title,
+            score=float(score) if score is not None else 0.0,
+            recording_id=recording_id,
+        )
+        track_pre = TrackInfo(
+            stream_title=f"{artist} - {title}",
+            artist=artist,
+            title=title,
+        )
+        meta = await self._collect_metadata(result, track_pre, path)
+        provenance = f"{self._name}/{self._name}"
+
+        # Staging-Kopie im work_dir taggen, dann atomar zurück (kein Teilzustand in der Bibliothek)
+        stage = self._settings.work_dir / f"enrich-{path.name}"
+        stage.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(str(path), str(stage))
+        except OSError:
+            self._log.error("[%s] Kopieren nach work_dir fehlgeschlagen: %s", self._name, path.name)
+            return
+
+        ok = await self._write_tags(
+            stage_path=stage,
+            meta=meta,
+            provenance=provenance,
+            final_path=path,
+        )
+        if ok:
+            try:
+                os.replace(str(stage), str(path))
+                self._log.info("[%s] Bestandsdatei angereichert: %s", self._name, path.name)
+            except OSError:
+                self._log.error("[%s] Atomarer Replace fehlgeschlagen: %s", self._name, path.name)
+            finally:
+                safe_unlink(stage)
+        else:
+            safe_unlink(stage)
+
+        # Katalog aktualisieren (falls vorhanden)
+        if self._catalog is not None:
+            await self._catalog_upsert(
+                path,
+                meta.result,
+                meta.mb_data,
+                meta.enriched,
+                meta.deezer_data,
+                has_cover=(meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich) is not None,
+            )
 
     async def _process_one(self, mp3_path: Path) -> None:
         proc_path = mp3_path.with_suffix(".processing")
@@ -564,35 +713,27 @@ class FileProcessor:
 
         return provenance, final_path, delete_old
 
-    async def _process_file(self, proc_path: Path) -> None:
-        work_path = await self._move_to_work_dir(proc_path)
-        if work_path is None:
-            return
+    async def _collect_metadata(
+        self,
+        result: FingerprintResult,
+        track_pre: TrackInfo,
+        work_path: Path,
+    ) -> CollectedMetadata:
+        """Phase 3+4: Parallele Anreicherung + MB-Korrektur (gemeinsam für neue & Bestandsdateien).
 
-        result = await self._fingerprint_and_validate(work_path)
-        if result is None:
-            return
-
-        # ── Phase 3: CAA+MB || iTunes+Lyrics+ArtImg || Deezer (alle parallel, alle nur vom Fingerprint abhängig) ──
-        fp_result = result
-        # TrackInfo direkt aus den bereits getrennten Feldern bauen — kein Re-Split,
-        # damit ein ' - ' im Künstlernamen nicht zu falschem artist/title führt.
-        track_pre = TrackInfo(
-            stream_title=f"{fp_result.artist} - {fp_result.title}",
-            artist=fp_result.artist,
-            title=fp_result.title,
-        )
-
+        CAA+MB || iTunes+Lyrics+ArtImg || Deezer laufen parallel, danach MB-Korrektur
+        (MB-Daten kanonisch, iTunes als Fallback) inkl. Deezer-Re-Fetch.
+        """
         # deezer_attempted unterscheidet "Deezer angerufen, kein Treffer" (→ löschen)
         # von "Deezer gar nicht versucht / Exception" (→ überspringen, API evtl. down)
         deezer_attempted = False
 
         async def _phase1_caa_mb() -> tuple[bytes | None, MusicBrainzData | None]:
-            if not self._cover_provider or not fp_result.recording_id:
+            if not self._cover_provider or not result.recording_id:
                 return None, None
             cover, mb, _ = await _fetch_cover_data(
                 self._cover_provider,
-                fp_result.recording_id,
+                result.recording_id,
                 None,
                 "",
                 self._name,
@@ -602,10 +743,10 @@ class FileProcessor:
 
         async def _phase_deezer() -> tuple[DeezerData | None, bytes | None]:
             nonlocal deezer_attempted
-            if not self._deezer_provider or not (fp_result.artist or fp_result.title):
+            if not self._deezer_provider or not (result.artist or result.title):
                 return None, None
             try:
-                data = await self._deezer_provider.fetch(fp_result.artist, fp_result.title)
+                data = await self._deezer_provider.fetch(result.artist, result.title)
                 deezer_attempted = True
                 cover = data.cover_bytes if data else None
                 return data, cover
@@ -614,7 +755,7 @@ class FileProcessor:
                 return None, None
 
         phase1_task = asyncio.create_task(_phase1_caa_mb())
-        phase3_task = asyncio.create_task(self._enrich_parallel(fp_result, track_pre, work_path))
+        phase3_task = asyncio.create_task(self._enrich_parallel(result, track_pre, work_path))
         deezer_task = asyncio.create_task(_phase_deezer())
         cover_from_caa, mb_data = await phase1_task
         enriched, cover_from_enrich, artist_image, lyrics = await phase3_task
@@ -634,7 +775,7 @@ class FileProcessor:
             # MB hat artist/title geändert → Deezer war für "falschen" Künstler gesucht → neu fetchen
             if (
                 deezer_data is not None
-                and (corrected.artist != fp_result.artist or corrected.title != fp_result.title)
+                and (corrected.artist != result.artist or corrected.title != result.title)
                 and self._deezer_provider is not None
             ):
                 try:
@@ -648,51 +789,69 @@ class FileProcessor:
                     # Netzwerkfehler ≠ "nicht auf Deezer": Datei NICHT als unbekannt löschen.
                     deezer_attempted = False
             result = corrected
+
         # TrackInfo direkt aus den korrigierten Feldern bauen — kein Re-Split.
         track = TrackInfo(
             stream_title=f"{result.artist} - {result.title}",
             artist=result.artist,
             title=result.title,
         )
+        return CollectedMetadata(
+            result=result,
+            track=track,
+            enriched=enriched,
+            mb_data=mb_data,
+            deezer_data=deezer_data,
+            deezer_cover=deezer_cover,
+            cover_from_caa=cover_from_caa,
+            cover_from_enrich=cover_from_enrich,
+            deezer_attempted=deezer_attempted,
+            artist_image=artist_image,
+            lyrics=lyrics,
+        )
+
+    async def _process_file(self, proc_path: Path) -> None:
+        work_path = await self._move_to_work_dir(proc_path)
+        if work_path is None:
+            return
+
+        result = await self._fingerprint_and_validate(work_path)
+        if result is None:
+            return
+
+        # ── Phase 3+4: Parallele Anreicherung + MB-Korrektur ──
+        track_pre = TrackInfo(
+            stream_title=f"{result.artist} - {result.title}",
+            artist=result.artist,
+            title=result.title,
+        )
+        meta = await self._collect_metadata(result, track_pre, work_path)
 
         # ── Phase 5-10: unter recording_id-Lock -- verhindert Race Condition ──
         # Zwei Worker die denselben Song gleichzeitig verarbeiten würden sonst beide
         # "kein Duplikat" lesen und beide schreiben. Der Lock serialisiert die
         # kritische Sequenz: Duplikat-Prüfung → Move → DB-Upsert.
-        recording_lock = self._recording_locks.setdefault(result.recording_id, asyncio.Lock())
+        recording_lock = self._recording_locks.setdefault(meta.result.recording_id, asyncio.Lock())
         async with recording_lock:
-            await self._process_critical_section(
-                result=result,
-                track=track,
-                enriched=enriched,
-                mb_data=mb_data,
-                deezer_data=deezer_data,
-                deezer_cover=deezer_cover,
-                cover_from_caa=cover_from_caa,
-                cover_from_enrich=cover_from_enrich,
-                deezer_attempted=deezer_attempted,
-                work_path=work_path,
-                artist_image=artist_image,
-                lyrics=lyrics,
-            )
+            await self._process_critical_section(meta=meta, work_path=work_path)
 
     async def _process_critical_section(
         self,
         *,
-        result: FingerprintResult,
-        track: TrackInfo,
-        enriched: EnrichedInfo | None,
-        mb_data: MusicBrainzData | None,
-        deezer_data: Any,
-        deezer_cover: bytes | None,
-        cover_from_caa: bytes | None,
-        cover_from_enrich: bytes | None,
-        deezer_attempted: bool,
+        meta: CollectedMetadata,
         work_path: Path,
-        artist_image: bytes | None,
-        lyrics: str | None,
     ) -> None:
         """Kritischer Abschnitt unter recording_id-Lock: Duplikat-Prüfung, Move, Tagging, DB-Upsert."""
+        result = meta.result
+        track = meta.track
+        enriched = meta.enriched
+        deezer_data = meta.deezer_data
+        deezer_cover = meta.deezer_cover
+        cover_from_caa = meta.cover_from_caa
+        cover_from_enrich = meta.cover_from_enrich
+        deezer_attempted = meta.deezer_attempted
+        mb_data = meta.mb_data
+
         provenance, final_path, delete_old = await self._compute_destination_and_score(
             result,
             track,
@@ -752,63 +911,14 @@ class FileProcessor:
                     )
 
         # ── Phase 8: Tag-Write (Cover: Deezer → CAA → iTunes) ──
-        final_cover = deezer_cover or cover_from_caa or cover_from_enrich
-        if final_cover is None:
-            self._log.warning(
-                "[%s] Kein Cover für %s gefunden (Deezer/CAA/iTunes lieferten nichts)",
-                self._name,
-                stage_path.name,
-            )
-
-        last_exc: Exception | None = None
-        for attempt in range(1, _TAG_WRITE_MAX_ATTEMPTS + 1):
-            try:
-                self._tagger.write_all(
-                    stage_path,
-                    track,
-                    provenance,
-                    enriched=enriched,
-                    cover_bytes=final_cover,
-                    recording_id=result.recording_id,
-                    score=result.score,
-                    mb_data=mb_data,
-                    artist_image=artist_image,
-                    lyrics=lyrics,
-                    deezer=deezer_data,
-                )
-                last_exc = None
-                break
-            except Exception as exc:
-                last_exc = exc
-                if attempt < _TAG_WRITE_MAX_ATTEMPTS:
-                    self._log.warning(
-                        "[%s] Tag write fehlgeschlagen (Versuch %d/%d), retry: %s",
-                        self._name,
-                        attempt,
-                        _TAG_WRITE_MAX_ATTEMPTS,
-                        exc,
-                    )
-                    await asyncio.sleep(_TAG_WRITE_BASE_DELAY * attempt)
-
-        if last_exc is not None:
-            self._log.warning(
-                "[%s] Tag write failed — Datei wird NICHT nach %s verschoben (ungetaggt): %s",
-                self._name,
-                final_path.parent,
-                last_exc,
-            )
+        if not await self._write_tags(
+            stage_path=stage_path,
+            meta=meta,
+            provenance=provenance,
+            final_path=final_path,
+        ):
             self._move_to_temp(stage_path)
             return
-
-        if final_cover is not None:
-            self._log.info("[%s] Cover embedded: %s", self._name, stage_path.name)
-        if lyrics:
-            self._log.info(
-                "[%s] Lyrics found for %s (%d chars)",
-                self._name,
-                stage_path.name,
-                len(lyrics),
-            )
 
         # ── Phase 9: Atomarer Move zu destination + ggf. alte Datei löschen ──
         final_path.parent.mkdir(parents=True, exist_ok=True)
@@ -842,9 +952,77 @@ class FileProcessor:
                 mb_data,
                 enriched,
                 deezer_data,
-                has_cover=final_cover is not None,
+                has_cover=(deezer_cover or cover_from_caa or cover_from_enrich) is not None,
             )
             await self._maybe_evict(deezer_data.rank if deezer_data else None, final_path=final_path)
+
+    async def _write_tags(
+        self,
+        *,
+        stage_path: Path,
+        meta: CollectedMetadata,
+        provenance: str,
+        final_path: Path,
+    ) -> bool:
+        """Phase 8: Ein-Pass-Tag-Write mit Retry. Gibt True bei Erfolg zurück."""
+        result = meta.result
+        final_cover = meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich
+        if final_cover is None:
+            self._log.warning(
+                "[%s] Kein Cover für %s gefunden (Deezer/CAA/iTunes lieferten nichts)",
+                self._name,
+                stage_path.name,
+            )
+
+        last_exc: Exception | None = None
+        for attempt in range(1, _TAG_WRITE_MAX_ATTEMPTS + 1):
+            try:
+                self._tagger.write_all(
+                    stage_path,
+                    meta.track,
+                    provenance,
+                    enriched=meta.enriched,
+                    cover_bytes=final_cover,
+                    recording_id=result.recording_id,
+                    score=result.score,
+                    mb_data=meta.mb_data,
+                    artist_image=meta.artist_image,
+                    lyrics=meta.lyrics,
+                    deezer=meta.deezer_data,
+                )
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _TAG_WRITE_MAX_ATTEMPTS:
+                    self._log.warning(
+                        "[%s] Tag write fehlgeschlagen (Versuch %d/%d), retry: %s",
+                        self._name,
+                        attempt,
+                        _TAG_WRITE_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    await asyncio.sleep(_TAG_WRITE_BASE_DELAY * attempt)
+
+        if last_exc is not None:
+            self._log.warning(
+                "[%s] Tag write failed — Datei wird NICHT nach %s verschoben (ungetaggt): %s",
+                self._name,
+                final_path.parent,
+                last_exc,
+            )
+            return False
+
+        if final_cover is not None:
+            self._log.info("[%s] Cover embedded: %s", self._name, stage_path.name)
+        if meta.lyrics:
+            self._log.info(
+                "[%s] Lyrics found for %s (%d chars)",
+                self._name,
+                stage_path.name,
+                len(meta.lyrics),
+            )
+        return True
 
     async def _catalog_upsert(
         self,

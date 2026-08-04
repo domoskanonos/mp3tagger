@@ -170,6 +170,10 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
         logger=logger,
     )
 
+    if settings.enrich_missing_tags_on_startup:
+        logger.info("[Startup] Vervollständige fehlende Tags/Cover in Bestandsdateien ...")
+        await proc.enrich_existing_files()
+
     def _signal_handler(signum: int, _frame: object | None) -> None:
         logger.info("Signal %s received - shutting down...", signum)
         stop_event.set()

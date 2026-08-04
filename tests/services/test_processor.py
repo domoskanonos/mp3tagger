@@ -578,6 +578,95 @@ class TestProcessFileHappyPath:
         assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
 
 
+class TestEnrichExistingFiles:
+    async def test_enriches_missing_album_only(self, tmp_path: Path):
+        """Bestandsdatei mit fehlendem Album wird über denselben Flow angereichert."""
+        from mutagen.id3 import ID3, TIT2, TPE1
+
+        from radio_ripper.services.tagging import ID3Tagger
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        proc._tagger = ID3Tagger()  # type: ignore[method-assign]
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "Artist - Title.mp3"
+        _write_mp3(f, size=512)
+        # Datei mit Artist/Title aber OHNE Album vorbereiten
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.save(f, v2_version=3)
+
+        # iTunes liefert Album + Genre
+        proc._metadata.fetch.return_value = EnrichedInfo(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            album="Great Album",
+            genre="Rock",
+        )
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        await proc.enrich_existing_files()
+
+        audio2 = ID3(f)
+        assert (alb := audio2.get("TALB")) is not None and alb.text == ["Great Album"]
+        assert (g := audio2.get("TCON")) is not None and g.text == ["Rock"]
+
+    async def test_skips_complete_files(self, tmp_path: Path):
+        """Datei mit Album + Genre + Cover wird NICHT angefasst."""
+        from mutagen.id3 import APIC, ID3, TALB, TCON, TIT2, TPE1
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "Artist - Title.mp3"
+        _write_mp3(f, size=512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.add(TALB(encoding=3, text="Album"))
+        audio.add(TCON(encoding=3, text="Rock"))
+        audio.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=b"\xff\xd8\xff" + b"\x00" * 64))
+        audio.save(f, v2_version=3)
+        before = f.read_bytes()
+
+        await proc.enrich_existing_files()
+
+        # Datei unverändert
+        assert f.read_bytes() == before
+        proc._metadata.fetch.assert_not_called()  # type: ignore[attr-defined]
+
+    async def test_never_deletes_existing_file(self, tmp_path: Path):
+        """Bestandsdateien werden bei der Anreicherung nie gelöscht (auch ohne recording_id)."""
+        from mutagen.id3 import ID3, TIT2, TPE1
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "Artist - Title.mp3"
+        _write_mp3(f, size=512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.save(f, v2_version=3)
+
+        # alle Provider liefern nichts
+        proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        await proc.enrich_existing_files()
+
+        assert f.exists()
+        # kein Rest im work_dir (Staging-Kopie aufgeräumt)
+        assert not list((proc._settings.work_dir).rglob("enrich-*"))
+
+
 class TestProcessFileFailurePaths:
     async def test_fingerprint_failure_cleans_up(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
