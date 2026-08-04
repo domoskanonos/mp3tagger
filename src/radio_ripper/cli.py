@@ -79,7 +79,7 @@ async def _watch_config(
             try:
                 mtime = cfg_path.stat().st_mtime
                 if mtime != last_mtime:
-                    new_settings = await _load_settings_with_retry(cfg_path, logger)
+                    new_settings = await _load_settings_with_retry(cfg_path)
                     if new_settings.log_level != log_level:
                         logging.getLogger().setLevel(new_settings.log_level)
                         logger.setLevel(new_settings.log_level)
@@ -95,7 +95,6 @@ async def _watch_config(
 
 async def _load_settings_with_retry(
     cfg_path: Path,
-    logger: logging.Logger,
     *,
     attempts: int = 5,
     delay: float = 0.05,

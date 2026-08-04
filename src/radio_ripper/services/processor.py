@@ -444,7 +444,6 @@ class FileProcessor:
         if ok:
             try:
                 os.replace(str(stage), str(path))
-                self._log.info("[%s] Bestandsdatei angereichert: %s", self._name, path.name)
             except OSError:
                 self._log.error("[%s] Atomarer Replace fehlgeschlagen: %s", self._name, path.name)
             finally:
@@ -462,6 +461,56 @@ class FileProcessor:
                 meta.deezer_data,
                 has_cover=(meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich) is not None,
             )
+
+        # Vorher/Nachher-Vergleich der Tags — logge, was sich wirklich geändert hat.
+        if ok:
+            self._log_changed_tags(path, tags, self._name)
+
+    def _log_changed_tags(self, path: Path, before: dict[str, Any], station_name: str) -> None:
+        """Loggt, welche Tags sich durch die Anreicherung tatsächlich geändert haben."""
+        try:
+            after = read_tags_from_file(path)
+        except Exception:
+            self._log.debug("[%s] Tags nach Anreicherung nicht lesbar: %s", station_name, path.name)
+            return
+
+        def _norm(value: Any) -> Any:
+            if isinstance(value, str):
+                value = value.strip()
+                return value or None
+            return value
+
+        changes: list[str] = []
+        for field, label in (
+            ("album", "Album"),
+            ("genre", "Genre"),
+            ("recording_id", "recording_id"),
+            ("isrc", "ISRC"),
+            ("artist", "Artist"),
+            ("title", "Title"),
+        ):
+            old = _norm(before.get(field))
+            new = _norm(after.get(field))
+            if old != new:
+                changes.append(f"{label}: {old!r} -> {new!r}")
+
+        cover_before = bool(before.get("has_cover"))
+        cover_after = bool(after.get("has_cover"))
+        if cover_before != cover_after:
+            changes.append(
+                f"Cover: {'vorhanden' if cover_before else 'fehlt'} -> "
+                f"{'vorhanden' if cover_after else 'fehlt'}"
+            )
+
+        if changes:
+            self._log.info(
+                "[%s] Tags geändert in %s: %s",
+                station_name,
+                path.name,
+                "; ".join(changes),
+            )
+        else:
+            self._log.debug("[%s] Keine Tag-Änderungen in %s", station_name, path.name)
 
     async def _process_one(self, mp3_path: Path) -> None:
         proc_path = mp3_path.with_suffix(".processing")

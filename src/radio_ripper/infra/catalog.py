@@ -27,6 +27,17 @@ from mutagen.mp3 import MP3
 _LOGGER = logging.getLogger("radio_ripper.catalog")
 
 
+def _log_progress(logger: logging.Logger, done: int, total: int, label: str) -> None:
+    """Loggt einen Fortschrittsbalken (ASCII) bei jedem Prozentpunktwechsel."""
+    if total <= 0:
+        return
+    pct = done * 100 // total
+    bar_width = 20
+    filled = round(pct * bar_width / 100)
+    bar = "#" * filled + "-" * (bar_width - filled)
+    logger.info("[%s] %3d%% |%s| %d/%d", label, pct, bar, done, total)
+
+
 # ── Datenmodell ──────────────────────────────────────────────────────────────
 
 
@@ -451,47 +462,68 @@ class SqliteCatalog(Catalog):
         all_rows = await self.list_all()
         known_paths: set[str] = set()
 
+        step1_total = len(all_rows)
+        done = 0
+        _log_progress(_LOGGER, 0, step1_total, "Reconcile (Einträge)")
+
+        def _tick1() -> None:
+            nonlocal done
+            done += 1
+            _log_progress(_LOGGER, done, step1_total, "Reconcile (Einträge)")
+
         async def _refresh_existing(row: SongRecord) -> None:
             async with sem:
-                if not Path(row.file_path).exists():
-                    await self.remove(row.file_path)
-                    report.removed += 1
-                    _LOGGER.debug("[Reconcile] entfernt verwaisten DB-Eintrag: %s", row.file_path)
-                    return
-                # Datei existiert → Tags neu lesen und DB aktualisieren
-                known_paths.add(row.file_path)
                 try:
-                    rec = await asyncio.to_thread(self._build_record_from_file, Path(row.file_path))
-                    if rec is not None:
-                        # station_name aus vorhandenem DB-Eintrag erhalten (steht nicht im Tag)
-                        refreshed = SongRecord(
-                            file_path=rec.file_path,
-                            recording_id=rec.recording_id,
-                            isrc=rec.isrc,
-                            artist=rec.artist,
-                            title=rec.title,
-                            album=rec.album,
-                            release_group_type=rec.release_group_type,
-                            station_name=row.station_name,
-                            file_size=rec.file_size,
-                            bitrate=rec.bitrate,
-                            sample_rate=rec.sample_rate,
-                            duration_ms=rec.duration_ms,
-                            acoustid_score=rec.acoustid_score,
-                            popularity_rank=rec.popularity_rank,
-                            has_cover=rec.has_cover,
-                        )
-                        await self.upsert(refreshed)
-                        report.kept += 1
-                except Exception as exc:
-                    report.errors.append(f"{row.file_path}: {exc}")
-                    _LOGGER.debug("[Reconcile] Fehler beim Aktualisieren von %s: %s", row.file_path, exc)
-                    report.kept += 1  # zählen trotzdem als vorhanden
+                    if not Path(row.file_path).exists():
+                        await self.remove(row.file_path)
+                        report.removed += 1
+                        _LOGGER.debug("[Reconcile] entfernt verwaisten DB-Eintrag: %s", row.file_path)
+                        return
+                    # Datei existiert → Tags neu lesen und DB aktualisieren
+                    known_paths.add(row.file_path)
+                    try:
+                        rec = await asyncio.to_thread(self._build_record_from_file, Path(row.file_path))
+                        if rec is not None:
+                            # station_name aus vorhandenem DB-Eintrag erhalten (steht nicht im Tag)
+                            refreshed = SongRecord(
+                                file_path=rec.file_path,
+                                recording_id=rec.recording_id,
+                                isrc=rec.isrc,
+                                artist=rec.artist,
+                                title=rec.title,
+                                album=rec.album,
+                                release_group_type=rec.release_group_type,
+                                station_name=row.station_name,
+                                file_size=rec.file_size,
+                                bitrate=rec.bitrate,
+                                sample_rate=rec.sample_rate,
+                                duration_ms=rec.duration_ms,
+                                acoustid_score=rec.acoustid_score,
+                                popularity_rank=rec.popularity_rank,
+                                has_cover=rec.has_cover,
+                            )
+                            await self.upsert(refreshed)
+                            report.kept += 1
+                    except Exception as exc:
+                        report.errors.append(f"{row.file_path}: {exc}")
+                        _LOGGER.debug("[Reconcile] Fehler beim Aktualisieren von %s: %s", row.file_path, exc)
+                        report.kept += 1  # zählen trotzdem als vorhanden
+                finally:
+                    _tick1()
 
         await asyncio.gather(*(_refresh_existing(row) for row in all_rows))
 
         # Schritt 2: neue Dateien indizieren
         mp3_files: list[Path] = [p for p in destination.rglob("*.mp3") if str(p) not in known_paths]
+
+        step2_total = len(mp3_files)
+        done2 = 0
+        _log_progress(_LOGGER, 0, step2_total, "Reconcile (Neue)")
+
+        def _tick2() -> None:
+            nonlocal done2
+            done2 += 1
+            _log_progress(_LOGGER, done2, step2_total, "Reconcile (Neue)")
 
         async def _index_one(path: Path) -> None:
             async with sem:
@@ -504,6 +536,8 @@ class SqliteCatalog(Catalog):
                 except Exception as exc:
                     report.errors.append(f"{path}: {exc}")
                     _LOGGER.debug("[Reconcile] Fehler bei %s: %s", path, exc)
+                finally:
+                    _tick2()
 
         if mp3_files:
             await asyncio.gather(*(_index_one(p) for p in mp3_files))
