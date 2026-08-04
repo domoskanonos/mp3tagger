@@ -20,6 +20,7 @@ from radio_ripper.services.fingerprint import (
     FingerprintError,
     NonRetriableFingerprintError,
 )
+from radio_ripper.services.metadata_deezer import DeezerData
 from radio_ripper.services.processor import (
     FileProcessor,
     _fetch_artist_image,
@@ -570,3 +571,107 @@ class TestProcessFileFailurePaths:
         assert not mp3.exists()
         # und nicht in destination
         assert not proc._settings.destination.exists() or not list(proc._settings.destination.rglob("*.mp3"))
+
+    async def test_tag_write_failure_moves_to_temp_not_destination(self, tmp_path: Path):
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
+        )
+        proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+        proc._tagger.write_all.side_effect = RuntimeError("tag write boom")  # type: ignore[attr-defined]
+
+        await proc._process_one(mp3)
+
+        # ungetaggte Datei darf NICHT in destination landen (sonst "Unknown Album"/kein Cover in Navidrome)
+        assert not proc._settings.destination.exists() or not list(proc._settings.destination.rglob("*.mp3"))
+        # Datei sollte nach temp_dir (failed) verschoben worden sein
+        moved = list(proc._temp_dir.rglob("*.mp3"))
+        assert len(moved) == 1
+        assert moved[0].exists()
+
+    async def test_tag_write_retries_then_succeeds(self, tmp_path: Path):
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
+        )
+        proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        calls = 0
+
+        def _flaky(*args, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient tag write boom")
+
+        proc._tagger.write_all.side_effect = _flaky  # type: ignore[attr-defined]
+
+        await proc._process_one(mp3)
+
+        # zweiter Versuch war erfolgreich → Datei landet in destination
+        expected = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        assert calls == 2
+        assert not list(proc._temp_dir.rglob("*.mp3"))
+
+    async def test_deezer_refetch_network_error_does_not_delete(self, tmp_path: Path):
+        """Netzwerkfehler beim Deezer-Re-Fetch (nach MB-Korrektur) darf die Datei NICHT löschen.
+
+        Vor dem Fix blieb deezer_attempted=True + deezer_data=None → die Popularitäts-Prüfung
+        behandelte die Datei als "nicht auf Deezer" und löschte sie fälschlicherweise.
+        """
+        proc = _make_processor(tmp_path, min_popularity_rank=100)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
+        )
+        proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # Cover-Provider: kein Cover, aber MB liefert Künstler/Titel-Korrektur
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = MusicBrainzData(
+            recording_id="rec-1",
+            recording_artist="MBCorrectedArtist",
+            recording_title="MBCorrectedTitle",
+        )
+
+        # Deezer: erster Fetch liefert Daten, Re-Fetch nach MB-Korrektur wirft Netzwerkfehler
+        deezer = AsyncMock()
+        deezer.fetch.side_effect = [DeezerData(rank=1000), RuntimeError("network down")]
+        proc._deezer_provider = deezer
+
+        await proc._process_one(mp3)
+
+        # Datei darf NICHT gelöscht sein → landet verarbeitet in destination
+        expected = proc._settings.destination / "MBCorrectedArtist" / "MBCorrectedArtist - MBCorrectedTitle.mp3"
+        assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        assert not list(proc._temp_dir.rglob("*.mp3"))

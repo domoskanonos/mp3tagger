@@ -38,6 +38,9 @@ from radio_ripper.services.metadata_musicbrainz import CoverArtProvider
 from radio_ripper.services.popularity import PopularityProvider
 from radio_ripper.services.tagging import TrackTagger, read_acoustid_score
 
+_TAG_WRITE_MAX_ATTEMPTS = 3
+_TAG_WRITE_BASE_DELAY = 0.5
+
 # ── helpers ──
 
 
@@ -627,6 +630,8 @@ class FileProcessor:
                     self._log.debug("[%s] Deezer re-fetch after MB correction failed", self._name)
                     deezer_data = None
                     deezer_cover = None
+                    # Netzwerkfehler ≠ "nicht auf Deezer": Datei NICHT als unbekannt löschen.
+                    deezer_attempted = False
             result = corrected
         # TrackInfo direkt aus den korrigierten Feldern bauen — kein Re-Split.
         track = TrackInfo(
@@ -734,31 +739,55 @@ class FileProcessor:
         # ── Phase 8: Tag-Write (Cover: Deezer → CAA → iTunes) ──
         final_cover = deezer_cover or cover_from_caa or cover_from_enrich
 
-        try:
-            self._tagger.write_all(
-                stage_path,
-                track,
-                provenance,
-                enriched=enriched,
-                cover_bytes=final_cover,
-                recording_id=result.recording_id,
-                score=result.score,
-                mb_data=mb_data,
-                artist_image=artist_image,
-                lyrics=lyrics,
-                deezer=deezer_data,
-            )
-            if final_cover is not None:
-                self._log.info("[%s] Cover embedded: %s", self._name, stage_path.name)
-            if lyrics:
-                self._log.info(
-                    "[%s] Lyrics found for %s (%d chars)",
-                    self._name,
-                    stage_path.name,
-                    len(lyrics),
+        last_exc: Exception | None = None
+        for attempt in range(1, _TAG_WRITE_MAX_ATTEMPTS + 1):
+            try:
+                self._tagger.write_all(
+                    stage_path,
+                    track,
+                    provenance,
+                    enriched=enriched,
+                    cover_bytes=final_cover,
+                    recording_id=result.recording_id,
+                    score=result.score,
+                    mb_data=mb_data,
+                    artist_image=artist_image,
+                    lyrics=lyrics,
+                    deezer=deezer_data,
                 )
-        except Exception as exc:
-            self._log.warning("[%s] Tag write failed: %s", self._name, exc)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _TAG_WRITE_MAX_ATTEMPTS:
+                    self._log.warning(
+                        "[%s] Tag write fehlgeschlagen (Versuch %d/%d), retry: %s",
+                        self._name,
+                        attempt,
+                        _TAG_WRITE_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    await asyncio.sleep(_TAG_WRITE_BASE_DELAY * attempt)
+
+        if last_exc is not None:
+            self._log.warning(
+                "[%s] Tag write failed — Datei wird NICHT nach %s verschoben (ungetaggt): %s",
+                self._name,
+                final_path.parent,
+                last_exc,
+            )
+            self._move_to_temp(stage_path)
+            return
+
+        if final_cover is not None:
+            self._log.info("[%s] Cover embedded: %s", self._name, stage_path.name)
+        if lyrics:
+            self._log.info(
+                "[%s] Lyrics found for %s (%d chars)",
+                self._name,
+                stage_path.name,
+                len(lyrics),
+            )
 
         # ── Phase 9: Atomarer Move zu destination + ggf. alte Datei löschen ──
         final_path.parent.mkdir(parents=True, exist_ok=True)
