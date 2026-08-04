@@ -1,3 +1,3 @@
 """radio_ripper — production-grade webradio ripper."""
 
-__version__ = "3.1.0"
+__version__ = "3.1.1"
