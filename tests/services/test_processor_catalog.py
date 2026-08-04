@@ -52,7 +52,6 @@ def _make_processor(tmp_path: Path, catalog: SqliteCatalog | None = None, **over
         metadata_provider=meta,
         tagger=tagger,
         name="tag",
-        poll_interval=0.01,
         catalog=catalog,
         logger=logging.getLogger("test-catalog"),
     )

@@ -26,12 +26,6 @@
 
   // ── Metadaten & Cover ──────────────────────────────────────────────────────
   //
-  // Cover-Quellen in Prioritätsreihenfolge: Deezer → Cover Art Archive → iTunes.
-  // enable_coverartarchive: aktiviert MusicBrainz Cover Art Archive als zweite
-  // Cover-Quelle. Deaktivieren bedeutet auch: kein MusicBrainz-Lookup (ISRC,
-  // Genres, Labelinfo gehen verloren).
-  "enable_coverartarchive": true,
-  //
   // HTTP-Timeout für Metadaten-Anfragen (iTunes, MusicBrainz) in Sekunden.
   "metadata_timeout": 8.0,
   //
@@ -58,7 +52,7 @@
   // Maximale Sammlungsgröße in Anzahl Songs. 0 = unbegrenzt.
   // Wenn das Limit erreicht ist und enable_eviction aktiv ist, wird der
   // unpopulärste Song verdrängt.
-  "max_collection_size": 0,
+  "max_collection_size": 75000,
   //
   // Eviction: wenn true und max_collection_size > 0, wird bei vollem Limit
   // automatisch der unpopulärste Song gelöscht um Platz für den neuen zu machen.

@@ -16,6 +16,7 @@ from radio_ripper import __version__
 from radio_ripper.infra.catalog import SqliteCatalog
 from radio_ripper.infra.config import Settings, load_settings
 from radio_ripper.infra.errors import ConfigurationError
+from radio_ripper.infra.fs_events import FsEventSource
 from radio_ripper.infra.http import HttpxAsyncClient
 from radio_ripper.infra.logging import configure_logging
 from radio_ripper.services.fingerprint import AcoustidFingerprintProvider
@@ -62,22 +63,34 @@ async def _watch_config(
     logger: logging.Logger,
     log_level: str,
 ) -> None:
+    """Reagiert auf Änderungen an der Config-Datei via inotify (kein Polling).
+
+    Eine schlafende Festplatte wird nicht periodisch aufgeweckt — die Config
+    wird nur neu geladen, wenn sie tatsächlich geschrieben wurde.
+    """
     last_mtime = cfg_path.stat().st_mtime
-    while True:
-        await asyncio.sleep(10)
-        try:
-            mtime = cfg_path.stat().st_mtime
-            if mtime > last_mtime:
-                new_settings = load_settings(cfg_path)
-                if new_settings.log_level != log_level:
-                    logging.getLogger().setLevel(new_settings.log_level)
-                    logger.setLevel(new_settings.log_level)
-                    log_level = new_settings.log_level
-                proc.reload_settings(new_settings)
-                last_mtime = mtime
-                logger.info("Config reloaded from %s (mtime changed)", cfg_path)
-        except Exception:
-            logger.warning("Config reload failed", exc_info=True)
+    watcher = FsEventSource()
+    watcher.watch(cfg_path.parent, predicate=lambda p: Path(p).name == cfg_path.name)
+    watcher.start()
+    try:
+        while True:
+            if not await watcher.wait():
+                return
+            try:
+                mtime = cfg_path.stat().st_mtime
+                if mtime > last_mtime:
+                    new_settings = load_settings(cfg_path)
+                    if new_settings.log_level != log_level:
+                        logging.getLogger().setLevel(new_settings.log_level)
+                        logger.setLevel(new_settings.log_level)
+                        log_level = new_settings.log_level
+                    proc.reload_settings(new_settings)
+                    last_mtime = mtime
+                    logger.info("Config reloaded from %s (mtime changed)", cfg_path)
+            except Exception:
+                logger.warning("Config reload failed", exc_info=True)
+    finally:
+        watcher.stop()
 
 
 async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Path | None = None) -> int:
@@ -101,9 +114,7 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
     if settings.min_popularity_rank and settings.min_popularity_rank > 0:
         popularity = DeezerPopularityChecker(client)
 
-    cover_archive: CoverArtArchiveProvider | None = None
-    if settings.enable_coverartarchive:
-        cover_archive = CoverArtArchiveProvider(client, timeout=settings.cover_timeout)
+    cover_archive: CoverArtArchiveProvider = CoverArtArchiveProvider(client, timeout=settings.cover_timeout)
 
     lyrics_provider = LRCLibProvider(client, timeout=5.0)
 
@@ -130,7 +141,6 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
         metadata_provider=metadata,
         tagger=tagger,
         name="tag",
-        poll_interval=300.0,
         cover_provider=cover_archive,
         deezer_provider=deezer_provider,
         popularity_provider=popularity,

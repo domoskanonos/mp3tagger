@@ -20,6 +20,7 @@ from typing import Any
 from radio_ripper.domain.models import EnrichedInfo, FingerprintResult, MusicBrainzData, TrackInfo
 from radio_ripper.infra.catalog import Catalog, SongRecord, read_audio_from_file, read_tags_from_file
 from radio_ripper.infra.config import Settings
+from radio_ripper.infra.fs_events import FsEventSource
 from radio_ripper.services.collection_manager import (
     is_better_version,
     pick_eviction_candidate,
@@ -177,8 +178,8 @@ async def _fetch_lyrics(
 class FileProcessor:
     """Concurrent inbox processor (Semaphore-begrenzt, ``max_concurrent``).
 
-    Pollt *inbox* nach ``.mp3``-Dateien und verarbeitet bis zu
-    ``max_concurrent`` parallel. Pro Datei:
+    Reagiert via inotify auf neue ``.mp3``-Dateien im *inbox* (kein Polling —
+    eine schlafende Festplatte wird nicht periodisch aufgeweckt). Pro Datei:
 
       1. Move ``.processing`` → ``work_dir/``.
       2. Fingerprint (AcoustID) — Score < min → löschen.
@@ -208,7 +209,6 @@ class FileProcessor:
         tagger: TrackTagger,
         *,
         name: str = "processor",
-        poll_interval: float = 300.0,
         cover_provider: CoverArtProvider | None = None,
         deezer_provider: DeezerMetadataProvider | None = None,
         popularity_provider: PopularityProvider | None = None,
@@ -219,7 +219,6 @@ class FileProcessor:
         self._inbox = inbox
         self._temp_dir = temp_dir
         self._name = name
-        self._poll_interval = poll_interval
         self._log = logger or logging.getLogger(f"radio_ripper.{name}")
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -255,28 +254,34 @@ class FileProcessor:
                 await self._task
             self._task = None
 
-    # ── polling loop ──
+    # ── Event-getriebener Loop (inotify, kein Polling) ──
 
     async def _run(self) -> None:
-        self._log.info(
-            "%s started — polling %s every %.0fs",
-            self._name.title(),
-            self._inbox,
-            self._poll_interval,
-        )
-        while not self._stop_event.is_set():
-            try:
-                await self._drain_inbox()
-            except Exception:
-                self._log.exception("%s inbox scan failed", self._name.title())
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_interval)
-        self._log.info("%s stopped", self._name.title())
+        watcher = FsEventSource()
+        watcher.watch(self._inbox, predicate=lambda p: p.endswith(".mp3"))
+        watcher.start()
+        self._log.info("%s started — watching %s (inotify)", self._name.title(), self._inbox)
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await self._drain_inbox()
+                except Exception:
+                    self._log.exception("%s inbox scan failed", self._name.title())
+                # Auf neue Dateien warten (inotify) — kein periodisches Polling
+                if not await watcher.wait():
+                    return
+                # Debounce: Events während einer kurzen Pause akkumulieren,
+                # damit Batch-Writes nur einen Scan auslösen.
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=1.0)
+        finally:
+            watcher.stop()
+            self._log.info("%s stopped", self._name.title())
 
     async def _drain_inbox(self) -> None:
         mp3s = sorted(self._inbox.glob("*.mp3"))
         if not mp3s:
-            self._log.debug("No MP3s in %s — next scan in %.0fs", self._inbox, self._poll_interval)
+            self._log.debug("No MP3s in %s — waiting for new files (inotify)", self._inbox)
             return
 
         async def _gated_process(mp3: Path) -> None:

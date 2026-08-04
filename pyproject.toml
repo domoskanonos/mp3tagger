@@ -26,6 +26,7 @@ dependencies = [
     "pydub>=0.25.1",
     "pydantic>=2.7.0",
     "pyacoustid>=1.2.0",
+    "watchdog>=4.0.0",
 ]
 
 [project.scripts]

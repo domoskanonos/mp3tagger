@@ -58,7 +58,6 @@ def _make_processor(tmp_path: Path, **overrides: Any) -> FileProcessor:
         metadata_provider=meta,
         tagger=tagger,
         name="tag",
-        poll_interval=0.01,
         cover_provider=overrides.get("cover_provider"),
         popularity_provider=overrides.get("popularity_provider"),
         lyrics_provider=overrides.get("lyrics_provider"),
