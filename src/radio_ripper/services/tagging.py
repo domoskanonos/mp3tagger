@@ -277,13 +277,15 @@ class ID3Tagger(TrackTagger):
         """
 
         def _set_frame(frame_id: str, factory: Any, new_value: object) -> None:
+            # Leerer Wert → bestehenden (ggf. korrekten) Frame NICHT antasten.
+            if not new_value:
+                return
             current = audio.get(frame_id)
             old = str(current) if current is not None else ""
             new = str(new_value)
             if new != old:
                 audio.delall(frame_id)
-                if new:
-                    audio.add(factory(encoding=3, text=new_value))
+                audio.add(factory(encoding=3, text=new_value))
 
         # ── Basis-Frames ──
         if track.artist:
@@ -422,9 +424,16 @@ class ID3Tagger(TrackTagger):
             audio.delall("TXXX:Deezer Popularity Rank")
             audio.add(TXXX(encoding=3, desc="Deezer Popularity Rank", text=str(deezer.rank)))
 
+        # UPC/EAN des Albums von Deezer
+        if deezer and deezer.upc:
+            audio.delall("TXXX:UPC")
+            audio.add(TXXX(encoding=3, desc="UPC", text=deezer.upc))
+
         if mb_data is not None:
             mbs: str | None
             for tag_key, mbs, desc in (
+                ("TXXX:MusicBrainz Recording Title", mb_data.recording_title, "MusicBrainz Recording Title"),
+                ("TXXX:MusicBrainz Recording Artist", mb_data.recording_artist, "MusicBrainz Recording Artist"),
                 ("TXXX:MusicBrainz Release Title", mb_data.release_title, "MusicBrainz Release Title"),
                 ("TXXX:MusicBrainz Release Date", mb_data.release_date, "MusicBrainz Release Date"),
                 (

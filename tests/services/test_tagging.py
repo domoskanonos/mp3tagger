@@ -9,8 +9,9 @@ from unittest.mock import patch
 import pytest
 from mutagen.id3 import ID3
 
-from radio_ripper.domain.models import EnrichedInfo, TrackInfo
+from radio_ripper.domain.models import EnrichedInfo, MusicBrainzData, TrackInfo
 from radio_ripper.infra.errors import TaggingError
+from radio_ripper.services.metadata_deezer import DeezerData
 from radio_ripper.services.tagging import ID3Tagger, _guess_image_mime, _scale_cover
 
 
@@ -96,6 +97,53 @@ class TestID3Tagger:
             pytest.raises(TaggingError, match="Speichern fehlgeschlagen"),
         ):
             tagger.write_all(f, track, "S@u")
+
+    def test_write_all_writes_deezer_upc(self, tmp_path: Path):
+        """Bug: Deezer-UPC (API-Info) wurde nie in die MP3 geschrieben."""
+        f = tmp_path / "song.mp3"
+        _write_blank_mp3(f)
+        tagger = ID3Tagger()
+        track = TrackInfo("A - B", "A", "B")
+        deezer = DeezerData(upc="00602537853148", rank=500)
+        tagger.write_all(f, track, "S@u", deezer=deezer)
+        audio = ID3(f)
+        assert (u := audio.get("TXXX:UPC")) is not None and u.text == ["00602537853148"]
+
+    def test_write_all_writes_mb_recording_meta(self, tmp_path: Path):
+        """Bug: MB-Kanondaten (recording_title/recording_artist) wurden nie persistiert."""
+        f = tmp_path / "song.mp3"
+        _write_blank_mp3(f)
+        tagger = ID3Tagger()
+        track = TrackInfo("A - B", "A", "B")
+        mb = MusicBrainzData(
+            recording_id="r1",
+            recording_title="Hello",
+            recording_artist="Adele",
+            release_title="25",
+        )
+        tagger.write_all(f, track, "S@u", mb_data=mb)
+        audio = ID3(f)
+        assert (t := audio.get("TXXX:MusicBrainz Recording Title")) is not None and t.text == ["Hello"]
+        assert (a := audio.get("TXXX:MusicBrainz Recording Artist")) is not None and a.text == ["Adele"]
+
+    def test_write_all_preserves_existing_frame_on_empty_value(self, tmp_path: Path):
+        """Bug: Leerer API-Wert überschrieb/löschte vorhandene korrekte Frames."""
+        from mutagen.id3 import TALB
+
+        f = tmp_path / "song.mp3"
+        _write_blank_mp3(f)
+        # Datei mit korrektem Album-Tag vorbereiten (leeres ID3 erzeugen + speichern)
+        audio = ID3()
+        audio.add(TALB(encoding=3, text="Correct Album"))
+        audio.save(f, v2_version=3)
+
+        tagger = ID3Tagger()
+        track = TrackInfo("A - B", "A", "B")
+        # keine Album-Quelle → kein neuer Wert → vorhandener Frame muss erhalten bleiben
+        tagger.write_all(f, track, "S@u")
+
+        audio2 = ID3(f)
+        assert (alb := audio2.get("TALB")) is not None and alb.text == ["Correct Album"]
 
 
 class TestScaleCover:
