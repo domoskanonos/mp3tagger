@@ -35,6 +35,7 @@ class Settings(BaseModel):
         default=0, ge=0, description="0=disabled. >0 aktiviert Größenlimit + Eviction-Logik"
     )
     enable_eviction: bool = Field(default=False, description="Verdränge unpopulärste Songs bei vollem Sammlungslimit")
+
     @field_validator("log_level")
     @classmethod
     def _valid_level(cls, v: str) -> str:

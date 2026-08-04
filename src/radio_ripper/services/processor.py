@@ -470,8 +470,12 @@ class FileProcessor:
                     await self._catalog.remove(ev.file_path)
                     continue
                 if not is_better_version(
-                    result.score, None, None,
-                    ev.acoustid_score, ev.bitrate, ev.sample_rate,
+                    result.score,
+                    None,
+                    None,
+                    ev.acoustid_score,
+                    ev.bitrate,
+                    ev.sample_rate,
                 ):
                     # Mindestens eine vorhandene Kopie ist besser oder gleich → neue verwerfen
                     self._log.info(
