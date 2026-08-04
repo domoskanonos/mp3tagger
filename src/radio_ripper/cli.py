@@ -131,9 +131,9 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
     tagger = ID3Tagger()
     inbox = settings.source if settings.source is not None else settings.work_dir / "source"
 
-    popularity: PopularityProvider | None = None
-    if settings.min_popularity_rank and settings.min_popularity_rank > 0:
-        popularity = DeezerPopularityChecker(client)
+    # Künstlerbilder immer verfügbar (unabhängig vom Popularitätsfilter —
+    # der Deezer-Rank kommt aus deezer_provider, nicht aus popularity_provider).
+    popularity: PopularityProvider | None = DeezerPopularityChecker(client)
 
     cover_archive: CoverArtArchiveProvider = CoverArtArchiveProvider(client, timeout=settings.cover_timeout)
 
