@@ -27,15 +27,27 @@ from mutagen.mp3 import MP3
 _LOGGER = logging.getLogger("radio_ripper.catalog")
 
 
-def _log_progress(logger: logging.Logger, done: int, total: int, label: str) -> None:
-    """Loggt einen Fortschrittsbalken (ASCII) bei jedem Prozentpunktwechsel."""
+def _log_progress(
+    logger: logging.Logger,
+    done: int,
+    total: int,
+    label: str,
+    last_pct: int | None = None,
+) -> int | None:
+    """Loggt einen Fortschrittsbalken (ASCII) nur alle 5 % — sonst wird das Log zu groß.
+
+    Gibt den zuletzt geloggten Prozentwert zurück (für den nächsten Aufruf).
+    """
     if total <= 0:
-        return
+        return last_pct
     pct = done * 100 // total
+    if pct % 5 != 0 or pct == last_pct:
+        return last_pct
     bar_width = 20
     filled = round(pct * bar_width / 100)
     bar = "#" * filled + "-" * (bar_width - filled)
     logger.info("[%s] %3d%% |%s| %d/%d", label, pct, bar, done, total)
+    return pct
 
 
 # ── Datenmodell ──────────────────────────────────────────────────────────────
@@ -464,12 +476,12 @@ class SqliteCatalog(Catalog):
 
         step1_total = len(all_rows)
         done = 0
-        _log_progress(_LOGGER, 0, step1_total, "Reconcile (Einträge)")
+        last_pct = _log_progress(_LOGGER, 0, step1_total, "Reconcile (Einträge)")
 
         def _tick1() -> None:
-            nonlocal done
+            nonlocal done, last_pct
             done += 1
-            _log_progress(_LOGGER, done, step1_total, "Reconcile (Einträge)")
+            last_pct = _log_progress(_LOGGER, done, step1_total, "Reconcile (Einträge)", last_pct)
 
         async def _refresh_existing(row: SongRecord) -> None:
             async with sem:
@@ -518,12 +530,12 @@ class SqliteCatalog(Catalog):
 
         step2_total = len(mp3_files)
         done2 = 0
-        _log_progress(_LOGGER, 0, step2_total, "Reconcile (Neue)")
+        last_pct2 = _log_progress(_LOGGER, 0, step2_total, "Reconcile (Neue)")
 
         def _tick2() -> None:
-            nonlocal done2
+            nonlocal done2, last_pct2
             done2 += 1
-            _log_progress(_LOGGER, done2, step2_total, "Reconcile (Neue)")
+            last_pct2 = _log_progress(_LOGGER, done2, step2_total, "Reconcile (Neue)", last_pct2)
 
         async def _index_one(path: Path) -> None:
             async with sem:

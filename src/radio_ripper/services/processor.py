@@ -209,15 +209,27 @@ async def _fetch_lyrics(
         return None
 
 
-def _log_progress(logger: logging.Logger, done: int, total: int, label: str) -> None:
-    """Loggt einen Fortschrittsbalken (ASCII) bei jedem Prozentpunktwechsel."""
+def _log_progress(
+    logger: logging.Logger,
+    done: int,
+    total: int,
+    label: str,
+    last_pct: int | None = None,
+) -> int | None:
+    """Loggt einen Fortschrittsbalken (ASCII) nur alle 5 % — sonst wird das Log zu groß.
+
+    Gibt den zuletzt geloggten Prozentwert zurück (für den nächsten Aufruf).
+    """
     if total <= 0:
-        return
+        return last_pct
     pct = done * 100 // total
+    if pct % 5 != 0 or pct == last_pct:
+        return last_pct
     bar_width = 20
     filled = round(pct * bar_width / 100)
     bar = "#" * filled + "-" * (bar_width - filled)
     logger.info("[%s] %3d%% |%s| %d/%d", label, pct, bar, done, total)
+    return pct
 
 
 # ── processor ──
@@ -376,10 +388,10 @@ class FileProcessor:
             len(candidates),
         )
         done = 0
-        _log_progress(self._log, 0, len(candidates), self._name)
+        last_pct = _log_progress(self._log, 0, len(candidates), self._name)
 
         async def _gated(path: Path) -> None:
-            nonlocal done
+            nonlocal done, last_pct
             async with self._semaphore:
                 try:
                     await self._enrich_existing_file(path)
@@ -387,7 +399,7 @@ class FileProcessor:
                     self._log.exception("[%s] Fehler bei Bestandsdatei %s", self._name, path.name)
                 finally:
                     done += 1
-                    _log_progress(self._log, done, len(candidates), self._name)
+                    last_pct = _log_progress(self._log, done, len(candidates), self._name, last_pct)
 
         await asyncio.gather(*(_gated(p) for p in candidates), return_exceptions=True)
         self._log.info("[%s] Vervollständigung abgeschlossen (%d Dateien).", self._name, len(candidates))
