@@ -350,3 +350,58 @@ class TestCatalogUpsert:
         records = await catalog.list_all()
         assert len(records) == 1
         assert records[0].bitrate is None
+
+    async def test_enrich_uses_catalog_candidates(self, tmp_path: Path, catalog: SqliteCatalog):
+        """Enrich-Kandidaten kommen aus find_missing_tags (kein Datei-Scan)."""
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        from radio_ripper.services.tagging import ID3Tagger
+
+        dest = tmp_path / "out"
+        # Datei mit Artist/Title aber ohne Album/Genre/Cover (recording_id vorhanden)
+        f = dest / "Artist" / "Artist - Title.mp3"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"\xff\xfb" + b"\x00" * 512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="rec-1"))
+        audio.save(f, v2_version=3)
+
+        # Katalog mit demselben Eintrag (fehlendes Album/Genre/Cover) befüllen
+        await catalog.upsert(
+            SongRecord(
+                file_path=str(f),
+                recording_id="rec-1",
+                artist="Artist",
+                title="Title",
+                album=None,
+                genre=None,
+                has_cover=False,
+            )
+        )
+
+        proc = _make_processor(tmp_path, catalog=catalog)
+        proc._tagger = ID3Tagger()
+        proc._metadata.fetch.return_value = EnrichedInfo(  # type: ignore[attr-defined]
+            artist="Artist", title="Title", album="Great Album", genre="Rock"
+        )
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        await proc.enrich_existing_files()
+
+        target = dest / "Artist" / "Great Album" / "Artist - Title.mp3"
+        assert target.exists(), f"expected {target}, found: {list(dest.rglob('*.mp3'))}"
+        t = ID3(target)
+        assert t.get("TALB") is not None and t.get("TALB").text == ["Great Album"]
+        assert t.get("TCON") is not None and t.get("TCON").text == ["Rock"]
+        # Katalog-Eintrag nach Enrich aktualisiert (Genre + Album gesetzt)
+        records = await catalog.list_all()
+        new_records = [r for r in records if r.file_path == str(target)]
+        assert len(new_records) == 1
+        assert new_records[0].album == "Great Album"
+        assert new_records[0].genre == "Rock"

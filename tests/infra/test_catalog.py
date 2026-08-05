@@ -24,6 +24,9 @@ def _make_record(
     isrc: str | None = "ISRC001",
     artist: str = "Artist",
     title: str = "Title",
+    album: str | None = "Album",
+    genre: str | None = "Rock",
+    has_cover: bool = True,
     bitrate: int | None = 320,
     sample_rate: int | None = 44100,
     duration_ms: int | None = 200000,
@@ -36,6 +39,9 @@ def _make_record(
         isrc=isrc,
         artist=artist,
         title=title,
+        album=album,
+        genre=genre,
+        has_cover=has_cover,
         bitrate=bitrate,
         sample_rate=sample_rate,
         duration_ms=duration_ms,
@@ -172,6 +178,24 @@ class TestFindLeastPopular:
         assert len(results) == 2
 
 
+# ── find_missing_tags ────────────────────────────────────────────────────────
+
+
+class TestFindMissingTags:
+    async def test_none_when_all_complete(self, catalog: SqliteCatalog):
+        await catalog.upsert(_make_record(file_path="/a.mp3"))
+        assert await catalog.find_missing_tags() == []
+
+    async def test_missing_album_genre_cover(self, catalog: SqliteCatalog):
+        await catalog.upsert(_make_record(file_path="/complete.mp3"))
+        await catalog.upsert(_make_record(file_path="/no-album.mp3", album=None))
+        await catalog.upsert(_make_record(file_path="/no-genre.mp3", genre=None))
+        await catalog.upsert(_make_record(file_path="/no-cover.mp3", has_cover=False))
+        missing = await catalog.find_missing_tags()
+        paths = {r.file_path for r in missing}
+        assert paths == {"/no-album.mp3", "/no-genre.mp3", "/no-cover.mp3"}
+
+
 # ── count, remove, exists_by_path ────────────────────────────────────────────
 
 
@@ -240,6 +264,7 @@ class TestReconcile:
                     "artist": "Artist",
                     "title": "Song",
                     "album": None,
+                    "genre": None,
                     "acoustid_score": 0.9,
                     "popularity_rank": 12345,
                     "has_cover": True,

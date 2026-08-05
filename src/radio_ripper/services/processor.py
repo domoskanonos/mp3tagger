@@ -368,35 +368,50 @@ class FileProcessor:
         if not destination.exists():
             return
 
-        mp3_files = sorted(destination.rglob("*.mp3"))
-        if not mp3_files:
-            self._log.info("[%s] Keine Bestandsdateien gefunden.", self._name)
-            return
+        # Kandidaten aus dem Katalog (schnelle SQL-Query statt 50.000 Datei-Reads).
+        # Voraussetzung: der Reconcile hat die DB bereits gefüllt (reconcile_on_startup).
+        candidates: dict[Path, dict[str, Any]] = {}
+        if self._catalog is not None:
+            try:
+                missing = await self._catalog.find_missing_tags()
+            except Exception:
+                self._log.exception("[%s] Katalog-Abfrage fehlgeschlagen", self._name)
+                missing = []
+            for rec in missing:
+                if not rec.file_path:
+                    continue
+                candidates[Path(rec.file_path)] = {
+                    "artist": rec.artist or "",
+                    "title": rec.title or "",
+                    "album": rec.album,
+                    "genre": rec.genre,
+                    "has_cover": rec.has_cover,
+                    "recording_id": rec.recording_id or "",
+                    "acoustid_score": rec.acoustid_score,
+                }
+            self._log.info(
+                "[%s] %d Bestandsdateien mit fehlenden Tags gefunden (aus Katalog).",
+                self._name,
+                len(candidates),
+            )
+        else:
+            # Fallback ohne Katalog: Dateien direkt scannen (Sicherheitsnetz).
+            mp3_files = sorted(destination.rglob("*.mp3"))
+            if not mp3_files:
+                self._log.info("[%s] Keine Bestandsdateien gefunden.", self._name)
+                return
+            self._log.info("[%s] Durchsuche %d Bestandsdateien nach fehlenden Tags ...", self._name, len(mp3_files))
 
-        # Kandidaten-Scan: Tags aller Dateien parallel lesen (scan_concurrency),
-        # nicht sequenziell — sonst dauert es bei großen Sammlungen sehr lange,
-        # bis die eigentliche Verarbeitung startet.
-        self._log.info("[%s] Durchsuche %d Bestandsdateien nach fehlenden Tags ...", self._name, len(mp3_files))
-        scan_sem = asyncio.Semaphore(self._settings.scan_concurrency)
-        scan_done = 0
-        scan_pct = _log_progress(self._log, 0, len(mp3_files), self._name)
-
-        async def _scan_one(path: Path) -> bool:
-            nonlocal scan_done, scan_pct
-            async with scan_sem:
+            async def _scan_one(path: Path) -> bool:
                 try:
                     tags = await asyncio.to_thread(read_tags_from_file, path)
-                    missing = not tags.get("album") or not tags.get("genre") or not tags.get("has_cover")
+                    return not tags.get("album") or not tags.get("genre") or not tags.get("has_cover")
                 except Exception:
                     self._log.debug("[%s] Tags nicht lesbar, überspringe: %s", self._name, path)
-                    missing = False
-                finally:
-                    scan_done += 1
-                    scan_pct = _log_progress(self._log, scan_done, len(mp3_files), self._name, scan_pct)
-                return missing
+                    return False
 
-        scan_results = await asyncio.gather(*(_scan_one(p) for p in mp3_files), return_exceptions=True)
-        candidates = [p for p, is_missing in zip(mp3_files, scan_results, strict=True) if is_missing is True]
+            scan_results = await asyncio.gather(*(_scan_one(p) for p in mp3_files), return_exceptions=True)
+            candidates = {p: {} for p, is_missing in zip(mp3_files, scan_results, strict=True) if is_missing is True}
 
         if not candidates:
             self._log.info("[%s] Keine Bestandsdateien mit fehlenden Tags gefunden.", self._name)
@@ -410,29 +425,38 @@ class FileProcessor:
         done = 0
         last_pct = _log_progress(self._log, 0, len(candidates), self._name)
 
-        async def _gated(path: Path) -> None:
+        async def _gated(path: Path, pre_tags: dict[str, Any]) -> None:
             nonlocal done, last_pct
             async with self._semaphore:
                 try:
-                    await self._enrich_existing_file(path)
+                    await self._enrich_existing_file(path, pre_tags=pre_tags)
                 except Exception:
                     self._log.exception("[%s] Fehler bei Bestandsdatei %s", self._name, path.name)
                 finally:
                     done += 1
                     last_pct = _log_progress(self._log, done, len(candidates), self._name, last_pct)
 
-        await asyncio.gather(*(_gated(p) for p in candidates), return_exceptions=True)
+        await asyncio.gather(
+            *(_gated(p, pre_tags) for p, pre_tags in candidates.items()),
+            return_exceptions=True,
+        )
         self._log.info("[%s] Vervollständigung abgeschlossen (%d Dateien).", self._name, len(candidates))
 
-    async def _enrich_existing_file(self, path: Path) -> None:
+    async def _enrich_existing_file(self, path: Path, *, pre_tags: dict[str, Any] | None = None) -> None:
         """Reichert eine Bestandsdatei an und schreibt fehlende Tags in-place.
 
         Nutzt den GLEICHEN Flow wie neue MP3s (_collect_metadata + _write_tags +
         _finalize_and_move): Bei fehlender recording_id wird gefingert, damit die
         AcoustID-Wahrheit (artist/title/recording_id) und damit das richtige Cover
         gefunden werden. Keine Popularitäts-/Löschlogik für Bestand.
+
+        ``pre_tags`` sind bereits gelesene Tags (z.B. aus dem Katalog) — erspart
+        ein erneutes ``read_tags_from_file``.
         """
-        tags = await asyncio.to_thread(read_tags_from_file, path)
+        if pre_tags:
+            tags = pre_tags
+        else:
+            tags = await asyncio.to_thread(read_tags_from_file, path)
         artist = tags.get("artist") or ""
         title = tags.get("title") or ""
         if not artist or not title:
@@ -1275,6 +1299,7 @@ class FileProcessor:
             artist=result.artist,
             title=result.title,
             album=enriched.album if enriched else None,
+            genre=enriched.genre if enriched else None,
             release_group_type=mb_data.release_group_type if mb_data else None,
             station_name=self._name,
             file_size=final_path.stat().st_size if final_path.exists() else None,

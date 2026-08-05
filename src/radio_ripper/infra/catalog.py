@@ -63,6 +63,7 @@ class SongRecord:
     artist: str = ""
     title: str = ""
     album: str | None = None
+    genre: str | None = None
     release_group_type: str | None = None
     station_name: str | None = None
     file_size: int | None = None
@@ -118,6 +119,11 @@ class Catalog(ABC):
     async def list_all(self) -> list[SongRecord]: ...
 
     @abstractmethod
+    async def find_missing_tags(self) -> list[SongRecord]:
+        """Einträge, bei denen Album, Genre oder Cover fehlt — Enrich-Kandidaten."""
+        ...
+
+    @abstractmethod
     async def reconcile_with_filesystem(self, destination: Path, *, concurrency: int = 10) -> ReconcileReport: ...
 
     @abstractmethod
@@ -135,6 +141,7 @@ CREATE TABLE IF NOT EXISTS songs (
     artist              TEXT NOT NULL DEFAULT '',
     title               TEXT NOT NULL DEFAULT '',
     album               TEXT,
+    genre               TEXT,
     release_group_type  TEXT,
     station_name        TEXT,
     file_path           TEXT NOT NULL UNIQUE,
@@ -162,6 +169,7 @@ _MIGRATION_COLUMNS = (
     ("bitrate", "INTEGER"),
     ("sample_rate", "INTEGER"),
     ("duration_ms", "INTEGER"),
+    ("genre", "TEXT"),
 )
 
 
@@ -173,6 +181,7 @@ def _row_to_record(row: sqlite3.Row) -> SongRecord:
         artist=row["artist"],
         title=row["title"],
         album=row["album"],
+        genre=row["genre"],
         release_group_type=row["release_group_type"],
         station_name=row["station_name"],
         file_size=row["file_size"],
@@ -328,17 +337,18 @@ class SqliteCatalog(Catalog):
         self._conn.execute(
             """
             INSERT INTO songs (
-                recording_id, isrc, artist, title, album,
+                recording_id, isrc, artist, title, album, genre,
                 release_group_type, station_name, file_path, file_size,
                 bitrate, sample_rate, duration_ms,
                 acoustid_score, popularity_rank, has_cover, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(file_path) DO UPDATE SET
                 recording_id=excluded.recording_id,
                 isrc=excluded.isrc,
                 artist=excluded.artist,
                 title=excluded.title,
                 album=excluded.album,
+                genre=excluded.genre,
                 release_group_type=excluded.release_group_type,
                 station_name=excluded.station_name,
                 file_size=excluded.file_size,
@@ -356,6 +366,7 @@ class SqliteCatalog(Catalog):
                 rec.artist,
                 rec.title,
                 rec.album,
+                rec.genre,
                 rec.release_group_type,
                 rec.station_name,
                 rec.file_path,
@@ -451,6 +462,21 @@ class SqliteCatalog(Catalog):
 
     def _list_all_sync(self) -> list[SongRecord]:
         cur = self._conn.execute("SELECT * FROM songs")
+        return [_row_to_record(r) for r in cur.fetchall()]
+
+    async def find_missing_tags(self) -> list[SongRecord]:
+        async with self._lock:
+            return await asyncio.to_thread(self._find_missing_tags_sync)
+
+    def _find_missing_tags_sync(self) -> list[SongRecord]:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM songs
+            WHERE (album IS NULL OR album = '')
+               OR (genre IS NULL OR genre = '')
+               OR has_cover = 0
+            """
+        )
         return [_row_to_record(r) for r in cur.fetchall()]
 
     # ── reconcile ──────────────────────────────────────────────────────────
@@ -578,6 +604,7 @@ class SqliteCatalog(Catalog):
             artist=tags["artist"] or "",
             title=tags["title"] or "",
             album=tags["album"],
+            genre=tags["genre"],
             release_group_type=tags["release_group_type"],
             station_name=None,
             file_size=_safe_size(path),
