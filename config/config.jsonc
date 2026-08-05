@@ -34,8 +34,9 @@
 
   // ── Parallelität ───────────────────────────────────────────────────────────
   //
-  // Maximale Anzahl gleichzeitig verarbeiteter Dateien (1–20).
-  "max_concurrent": 3,
+  // Puffer-Obergrenze für gleichzeitig verarbeitete Dateien (nicht erzwungen —
+  // neue Dateien werden mit 1s Abstand gestartet, bis dieser Wert erreicht ist).
+  "max_concurrent": 10,
 
   // ── Logging ────────────────────────────────────────────────────────────────
   //

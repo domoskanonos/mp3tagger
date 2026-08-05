@@ -41,7 +41,6 @@ class CoverArtArchiveProvider(CoverArtProvider):
     """
 
     _MBZ_RECORDING_URL = "https://musicbrainz.org/ws/2/recording/{mbid}"
-    _MBZ_RELEASE_URL = "https://musicbrainz.org/ws/2/release/{release_id}"
     _CAA_RELEASE_FRONT = "https://coverartarchive.org/release/{mbid}/front"
     _USER_AGENT = "Radio-Ripper/2.0 (https://github.com/artokun/radioripper)"
     _MAX_RELEASES_TO_TRY = 5
@@ -133,35 +132,11 @@ class CoverArtArchiveProvider(CoverArtProvider):
         if chosen is None:
             return MusicBrainzData(recording_id=recording_id, isrcs=isrcs, genres=genres)
 
-        # Release-Details (Labels, Release-Group) abrufen
-        release_payload: dict[str, Any] | None = None
-        with contextlib.suppress(Exception):
-            release_payload = await self._rate_limited_json(
-                self._MBZ_RELEASE_URL.format(release_id=chosen["id"]),
-                params={"fmt": "json", "inc": "labels+release-groups"},
-            )
-
-        label_name: str | None = None
-        catalog_no: str | None = None
-        if release_payload:
-            with contextlib.suppress(Exception):
-                info = (release_payload.get("label-info") or [])[0]
-                if info:
-                    label_name = info.get("label", {}).get("name")
-                    if label_name and label_name.startswith("["):
-                        label_name = None
-                    catalog_no = info.get("catalog-number")
-                    if catalog_no and catalog_no.startswith("["):
-                        catalog_no = None
-
-        rg_type: str | None = None
-        if release_payload:
-            with contextlib.suppress(Exception):
-                rg = release_payload.get("release-group") or {}
-                prim = rg.get("primary-type") or ""
-                sec = rg.get("secondary-types") or []
-                parts = [prim] + [s for s in sec if s]
-                rg_type = " / ".join(parts) if parts else None
+        # Hinweis: Es wird bewusst KEIN separater Release-Detail-Call gemacht —
+        # nur die Daten aus dem Recording-Call (chosen) werden verwendet. Dadurch
+        # ist pro Datei genau 1 MB-Call nötig (MB-Rate-Limit 1 req/s bleibt sicher).
+        # Label/TPUB kommt über iTunes/Deezer; CatalogNumber/ReleaseGroupType/Barcode
+        # entfallen bewusst.
 
         length_ms: int | None = payload.get("length")
 
@@ -174,12 +149,8 @@ class CoverArtArchiveProvider(CoverArtProvider):
             genres=genres,
             release_id=chosen.get("id"),
             release_title=chosen.get("title"),
-            release_label=label_name,
-            release_catalog_no=catalog_no,
             release_date=chosen.get("date"),
             release_country=chosen.get("country"),
-            release_group_type=rg_type,
-            barcode=release_payload.get("barcode") if release_payload else None,
         )
 
     @retry_async(max_attempts=2, base_delay=0.5, exceptions=(httpx.HTTPError,))

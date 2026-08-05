@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import logging
 import shutil
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -344,18 +345,47 @@ class FileProcessor:
         if not mp3s:
             self._log.debug("No MP3s in %s — waiting for new files (inotify)", self._inbox)
             return
+        await self._run_staggered(((mp3, {}) for mp3 in mp3s), self._process_one_staggered)
 
-        async def _gated_process(mp3: Path) -> None:
-            async with self._semaphore:
-                if self._stop_event.is_set():
-                    return
-                try:
-                    await self._process_one(mp3)
-                except Exception:
-                    self._log.exception("Unexpected error processing %s", mp3)
+    async def _process_one_staggered(self, mp3: Path, _pre_tags: dict[str, Any] | None = None) -> None:
+        """Verarbeitet eine neue Inbox-Datei (unter dem max_concurrent-Puffer)."""
+        async with self._semaphore:
+            if self._stop_event.is_set():
+                return
+            try:
+                await self._process_one(mp3)
+            except Exception:
+                self._log.exception("Unexpected error processing %s", mp3)
 
-        tasks = [asyncio.create_task(_gated_process(mp3)) for mp3 in mp3s]
-        await asyncio.gather(*tasks, return_exceptions=True)
+    async def _run_staggered(
+        self,
+        items: Iterable[tuple[Path, dict[str, Any]]],
+        worker: Callable[[Path, dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        """Startet Dateien im 1-Sekunden-Takt, max_concurrent als Puffer.
+
+        Einheitlich für Inbox (neue MP3s) und Enrich (Bestandsdateien): Eine neue
+        Datei wird pro Sekunde gestartet; `max_concurrent` begrenzt nur die Zahl
+        der gleichzeitig in Arbeit befindlichen Dateien (Puffer, nicht erzwungen).
+        Dadurch bleibt das MusicBrainz-Rate-Limit (1 req/s) sicher eingehalten,
+        da jede Datei höchstens einen MB-Call auslöst.
+        """
+        in_flight: set[asyncio.Task[None]] = set()
+
+        async def _run(item: tuple[Path, dict[str, Any]]) -> None:
+            path, pre_tags = item
+            await worker(path, pre_tags)
+
+        for item in items:
+            # Puffer voll? → warten, bis ein Slot frei ist
+            while len(in_flight) >= self._settings.max_concurrent:
+                _done, in_flight = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+            task = asyncio.create_task(_run(item))
+            in_flight.add(task)
+            await asyncio.sleep(1.0)  # 1 neue Datei pro Sekunde
+
+        if in_flight:
+            await asyncio.gather(*in_flight, return_exceptions=True)
 
     async def enrich_existing_files(self) -> None:
         """Vervollständigt fehlende Tags/Cover in Bestandsdateien (destination/).
@@ -425,7 +455,7 @@ class FileProcessor:
         done = 0
         last_pct = _log_progress(self._log, 0, len(candidates), self._name)
 
-        async def _gated(path: Path, pre_tags: dict[str, Any]) -> None:
+        async def _enrich_worker(path: Path, pre_tags: dict[str, Any]) -> None:
             nonlocal done, last_pct
             async with self._semaphore:
                 try:
@@ -436,10 +466,7 @@ class FileProcessor:
                     done += 1
                     last_pct = _log_progress(self._log, done, len(candidates), self._name, last_pct)
 
-        await asyncio.gather(
-            *(_gated(p, pre_tags) for p, pre_tags in candidates.items()),
-            return_exceptions=True,
-        )
+        await self._run_staggered(candidates.items(), _enrich_worker)
         self._log.info("[%s] Vervollständigung abgeschlossen (%d Dateien).", self._name, len(candidates))
 
     async def _enrich_existing_file(self, path: Path, *, pre_tags: dict[str, Any] | None = None) -> None:

@@ -325,6 +325,28 @@ class TestDrainInbox:
         await proc._drain_inbox()
         assert call_count == 3
 
+    async def test_drain_staggers_one_per_second(self, tmp_path: Path):
+        """Neue Inbox-Dateien starten im 1-Sekunden-Takt (max_concurrent als Puffer)."""
+        import itertools
+        import time
+
+        proc = _make_processor(tmp_path)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        for name in ("a.mp3", "b.mp3", "c.mp3"):
+            (proc._inbox / name).write_bytes(b"\xff\xfb\x00\x00")
+        timestamps: list[float] = []
+
+        async def _mock_process(mp3_path: Path) -> None:
+            timestamps.append(time.monotonic())
+
+        proc._process_one = _mock_process  # type: ignore[method-assign]
+        await proc._drain_inbox()
+        assert len(timestamps) == 3
+        # Zwischen den Start-Zeitpunkten muss ~1s liegen (Stagger).
+
+        for a, b in itertools.pairwise(timestamps):
+            assert b - a >= 0.9, f"Stagger verletzt: {b - a:.2f}s zwischen Starts"
+
     async def test_stop_event_aborts_drain(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
         proc._inbox.mkdir(parents=True, exist_ok=True)
