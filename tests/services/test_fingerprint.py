@@ -14,12 +14,34 @@ from radio_ripper.services.fingerprint import (
 )
 
 
+def _payload(recordings: list[dict]) -> dict:
+    return {"status": "ok", "results": [{"id": "r1", "score": 0.9, "recordings": recordings}]}
+
+
+def _recording(
+    *,
+    title: str,
+    artist: str = "Test Artist",
+    duration: float = 200.0,
+    sources: int = 10,
+    rid: str = "rec123",
+    artist_mbid: str = "art123",
+) -> dict:
+    return {
+        "id": rid,
+        "title": title,
+        "duration": duration,
+        "sources": sources,
+        "artists": [{"id": artist_mbid, "name": artist}],
+    }
+
+
 class TestAcoustidFingerprintProvider:
     async def test_returns_match_for_good_result(self) -> None:
         provider = AcoustidFingerprintProvider("test-key", min_score=0.5)
-        fake_results = [(0.9, "rec123", "Test Artist", "Test Title")]
+        fake = _payload([_recording(title="Test Title")])
 
-        with patch("acoustid.match", return_value=fake_results):
+        with patch("acoustid.match", return_value=fake):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
 
         assert result is not None
@@ -27,19 +49,20 @@ class TestAcoustidFingerprintProvider:
         assert result.title == "Test Title"
         assert result.score == 0.9
         assert result.recording_id == "rec123"
+        assert result.artist_mbid == "art123"
 
     async def test_returns_none_when_score_below_threshold(self) -> None:
-        provider = AcoustidFingerprintProvider("test-key", min_score=0.8)
-        fake_results = [(0.5, "rec123", "Test Artist", "Test Title")]
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.95)
+        fake = _payload([_recording(title="Test Title")])
 
-        with patch("acoustid.match", return_value=fake_results):
+        with patch("acoustid.match", return_value=fake):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
 
         assert result is None
 
     async def test_returns_none_when_no_results(self) -> None:
         provider = AcoustidFingerprintProvider("test-key")
-        with patch("acoustid.match", return_value=[]):
+        with patch("acoustid.match", return_value={"status": "ok", "results": []}):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
         assert result is None
 
@@ -55,7 +78,6 @@ class TestAcoustidFingerprintProvider:
     async def test_raises_fingerprint_error_on_import_error(self) -> None:
         """Missing acoustid library is an infrastructure failure, not a no-match."""
         provider = AcoustidFingerprintProvider("test-key")
-        # Force ImportError by injecting a sentinel that raises on attribute access
         original = sys.modules.get("acoustid")
         sys.modules["acoustid"] = None  # type: ignore[assignment]
         try:
@@ -69,9 +91,9 @@ class TestAcoustidFingerprintProvider:
 
     async def test_returns_none_when_artist_and_title_empty(self) -> None:
         provider = AcoustidFingerprintProvider("test-key", min_score=0.0)
-        fake_results = [(0.9, "rec123", "", "")]
+        fake = _payload([_recording(title="", artist="")])
 
-        with patch("acoustid.match", return_value=fake_results):
+        with patch("acoustid.match", return_value=fake):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
         assert result is None
 
@@ -86,28 +108,58 @@ class TestAcoustidFingerprintProvider:
             await provider.fingerprint(Path("/tmp/test.mp3"))
         assert exc_info.value.__cause__ is original_exc
 
-    async def test_handles_generator_return_value_correctly(self) -> None:
-        """Real acoustid.match returns a generator (parse_lookup_result uses yield).
-        The provider must materialize it via list() before subscripting."""
+    async def test_picks_duration_match_over_stream_title(self) -> None:
+        """Kandidat mit passender Dauer gewinnt gegen StreamTitle-artigen Kandidaten."""
         provider = AcoustidFingerprintProvider("test-key", min_score=0.5)
-        fake_results = [(0.9, "rec123", "Test Artist", "Test Title")]
-
-        def fake_match(*args, **kwargs):
-            # Mimic real acoustid.match: return a generator, not a list
-            return (r for r in fake_results)
-
-        with patch("acoustid.match", side_effect=fake_match):
+        # Reale Datei ist 229s lang — der Kandidat mit duration=229 gewinnt.
+        fake = _payload(
+            [
+                _recording(title="My Blood", artist="twenty one pilots", duration=229.0, sources=696, rid="good"),
+                _recording(
+                    title="My blood (cover Twenty one pilots)",
+                    artist="Radio Tapok",
+                    duration=238.97,
+                    sources=6,
+                    rid="bad",
+                ),
+            ]
+        )
+        with (
+            patch("acoustid.match", return_value=fake),
+            patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=229.0),
+        ):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
         assert result is not None
-        assert result.artist == "Test Artist"
-        assert result.title == "Test Title"
-        assert result.score == 0.9
-        assert result.recording_id == "rec123"
+        assert result.recording_id == "good"
+        assert result.title == "My Blood"
+        assert result.artist == "twenty one pilots"
 
-    async def test_handles_empty_generator_as_no_match(self) -> None:
-        """An empty generator from acoustid.match means no match, not an error."""
-        provider = AcoustidFingerprintProvider("test-key")
-        with patch("acoustid.match", return_value=iter([])):
+    async def test_picks_higher_sources_when_duration_ties(self) -> None:
+        """Bei gleicher Duration gewinnt der Kandidat mit mehr Quellen."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.5)
+        fake = _payload(
+            [
+                _recording(title="A", duration=200.0, sources=1, rid="few"),
+                _recording(title="B", duration=200.0, sources=100, rid="many"),
+            ]
+        )
+        with (
+            patch("acoustid.match", return_value=fake),
+            patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=200.0),
+        ):
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert result is not None
+        assert result.recording_id == "many"
+
+    async def test_no_candidate_in_tolerance_returns_none(self) -> None:
+        """Kein Kandidat innerhalb der Dauer-Toleranz → kein Match."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.0)
+        # Reale Dauer ~200s, Kandidat liegt 30s daneben (> Toleranz 10s)
+        fake = _payload([_recording(title="Far Off", duration=170.0, sources=10)])
+        with (
+            patch("acoustid.match", return_value=fake),
+            patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=200.0),
+        ):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
         assert result is None
 
@@ -116,7 +168,6 @@ class TestAcoustidFingerprintProvider:
         our provider must wrap these in FingerprintError so callers can
         distinguish infra failures from genuine no-matches."""
         provider = AcoustidFingerprintProvider("test-key")
-        # Simulate the WebServiceError pyacoustid raises on bad API key
         try:
             from acoustid import WebServiceError
         except ImportError:
@@ -127,23 +178,3 @@ class TestAcoustidFingerprintProvider:
                 pytest.raises(FingerprintError, match="acoustid lookup failed"),
             ):
                 await provider.fingerprint(Path("/tmp/test.mp3"))
-
-    async def test_generator_iteration_error_wrapped_as_fingerprint_error(self) -> None:
-        """If materializing the generator (list()) raises (e.g. WebServiceError
-        during lazy iteration), we must wrap it as FingerprintError."""
-        provider = AcoustidFingerprintProvider("test-key")
-
-        def fake_match(*args, **kwargs):
-            # Generator that raises during iteration (like parse_lookup_result does
-            # when status != "ok")
-            def _gen():
-                yield  # first yield succeeds
-                raise RuntimeError("iteration failed")
-
-            return _gen()
-
-        with (
-            patch("acoustid.match", side_effect=fake_match),
-            pytest.raises(FingerprintError, match="acoustid lookup failed"),
-        ):
-            await provider.fingerprint(Path("/tmp/test.mp3"))

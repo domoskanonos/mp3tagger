@@ -98,12 +98,14 @@ class FingerprintResult:
         title: Matched track title.
         score: Confidence score (0.0-1.0).
         recording_id: MusicBrainz recording MBID.
+        artist_mbid: MusicBrainz artist MBID of the first artist (optional).
     """
 
     artist: str
     title: str
     score: float
     recording_id: str
+    artist_mbid: str | None = None
 
 
 __all__ = [

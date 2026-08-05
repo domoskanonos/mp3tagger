@@ -219,6 +219,7 @@ class TrackTagger(ABC):
         artist_image: bytes | None = None,
         lyrics: str | None = None,
         deezer: DeezerData | None = None,
+        artist_mbid: str | None = None,
     ) -> None:
         """Schreibt ALLE Tags in einem einzigen Durchgang."""
 
@@ -243,6 +244,7 @@ class ID3Tagger(TrackTagger):
         artist_image: bytes | None = None,
         lyrics: str | None = None,
         deezer: DeezerData | None = None,
+        artist_mbid: str | None = None,
     ) -> None:
         enriched = enriched or EnrichedInfo()
         with _tag_edit_context(file_path, "tags") as audio:
@@ -258,6 +260,7 @@ class ID3Tagger(TrackTagger):
                 artist_image=artist_image,
                 lyrics=lyrics,
                 deezer=deezer,
+                artist_mbid=artist_mbid,
             )
 
     @staticmethod
@@ -274,6 +277,7 @@ class ID3Tagger(TrackTagger):
         artist_image: bytes | None,
         lyrics: str | None,
         deezer: DeezerData | None = None,
+        artist_mbid: str | None = None,
     ) -> None:
         """Schreibt ID3-Frames mergend in das *audio*-Objekt.
 
@@ -427,6 +431,11 @@ class ID3Tagger(TrackTagger):
             audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=recording_id))
         audio.delall("TXXX:AcoustID Score")
         audio.add(TXXX(encoding=3, desc="AcoustID Score", text=str(round(score, 4))))
+
+        # MusicBrainz Artist MBID (aus dem AcoustID-Treffer)
+        if artist_mbid:
+            audio.delall("TXXX:MusicBrainz Artist Id")
+            audio.add(TXXX(encoding=3, desc="MusicBrainz Artist Id", text=artist_mbid))
 
         # ── Deezer Popularity Rank (wird beim Reconcile aus dem Tag zurückgelesen) ──
         if deezer and deezer.rank is not None:

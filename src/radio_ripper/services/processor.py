@@ -119,6 +119,7 @@ def correct_fingerprint_result(
             title=mb_data.recording_title or result.title,
             score=result.score,
             recording_id=result.recording_id,
+            artist_mbid=result.artist_mbid,
         )
     if (
         enriched
@@ -131,6 +132,7 @@ def correct_fingerprint_result(
             title=enriched.title,
             score=result.score,
             recording_id=result.recording_id,
+            artist_mbid=result.artist_mbid,
         )
     return result
 
@@ -406,15 +408,14 @@ class FileProcessor:
     async def _enrich_existing_file(self, path: Path) -> None:
         """Reichert eine Bestandsdatei an und schreibt fehlende Tags in-place.
 
-        Nutzt den GLEICHEN Flow wie neue MP3s (_collect_metadata + _write_tags),
-        aber ohne Fingerprint, ohne Duplikat-/Popularitätsprüfung und ohne Löschen.
-        Schreiben erfolgt über eine Staging-Kopie + Move zurück (EXDEV-sicher).
+        Nutzt den GLEICHEN Flow wie neue MP3s (_collect_metadata + _write_tags +
+        _finalize_and_move): Bei fehlender recording_id wird gefingert, damit die
+        AcoustID-Wahrheit (artist/title/recording_id) und damit das richtige Cover
+        gefunden werden. Keine Popularitäts-/Löschlogik für Bestand.
         """
         tags = await asyncio.to_thread(read_tags_from_file, path)
-        recording_id = tags.get("recording_id") or ""
         artist = tags.get("artist") or ""
         title = tags.get("title") or ""
-        score = tags.get("acoustid_score")
         if not artist or not title:
             self._log.info(
                 "[%s] Kein Künstler/Titel in %s — kann nicht anreichern, übersprungen",
@@ -423,16 +424,31 @@ class FileProcessor:
             )
             return
 
-        result = FingerprintResult(
-            artist=artist,
-            title=title,
-            score=float(score) if score is not None else 0.0,
-            recording_id=recording_id,
-        )
+        result = self._build_result_from_tags(tags)
+
+        # Wenn die Datei keine recording_id hat, fingerabtasten → AcoustID-Wahrheit
+        # (korrekte artist/title/recording_id/artist_mbid) ermitteln.
+        if not result.recording_id and self._fingerprint is not None:
+            try:
+                fp = await self._fingerprint.fingerprint(path)
+            except Exception:
+                self._log.debug("[%s] Fingerprint für Bestandsdatei fehlgeschlagen: %s", self._name, path.name)
+                fp = None
+            if fp is not None and fp.recording_id:
+                self._log.info(
+                    "[%s] Bestandsdatei per Fingerprint zugeordnet: %s -> %s - %s (recording_id=%s)",
+                    self._name,
+                    path.name,
+                    fp.artist,
+                    fp.title,
+                    fp.recording_id,
+                )
+                result = fp
+
         track_pre = TrackInfo(
-            stream_title=f"{artist} - {title}",
-            artist=artist,
-            title=title,
+            stream_title=f"{result.artist} - {result.title}",
+            artist=result.artist,
+            title=result.title,
         )
         meta = await self._collect_metadata(result, track_pre, path)
         provenance = f"{self._name}/{self._name}"
@@ -452,36 +468,166 @@ class FileProcessor:
             provenance=provenance,
             final_path=path,
         )
-        if ok:
-            try:
-                # shutil.move nutzt intern os.rename (atomar) und fällt bei
-                # verschiedenen Dateisystemen (EXDEV) auf copy+delete zurück.
-                shutil.move(str(stage), str(path))
-            except OSError as exc:
-                self._log.error(
-                    "[%s] Ersetzen fehlgeschlagen — Original bleibt unverändert: %s (%s)",
-                    self._name,
-                    path.name,
-                    exc,
-                )
-                safe_unlink(stage)
-        else:
+        if not ok:
             safe_unlink(stage)
+            return
 
-        # Katalog aktualisieren (falls vorhanden)
-        if self._catalog is not None:
-            await self._catalog_upsert(
-                path,
-                meta.result,
-                meta.mb_data,
-                meta.enriched,
-                meta.deezer_data,
-                has_cover=(meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich) is not None,
-            )
+        # Konsistent benennen + verschieben (wie neue MP3s), leere Alt-Ordner löschen.
+        await self._finalize_and_move(meta=meta, source_path=path, staged_path=stage)
 
         # Vorher/Nachher-Vergleich der Tags — logge, was sich wirklich geändert hat.
-        if ok:
-            self._log_changed_tags(path, tags, self._name)
+        self._log_changed_tags(path, tags, self._name)
+
+    @staticmethod
+    def _build_result_from_tags(tags: dict[str, Any]) -> FingerprintResult:
+        """Baut aus den vorhandenen ID3-Tags ein FingerprintResult (Bestandsfall)."""
+        recording_id = tags.get("recording_id") or ""
+        artist = tags.get("artist") or ""
+        title = tags.get("title") or ""
+        score = tags.get("acoustid_score")
+        return FingerprintResult(
+            artist=artist,
+            title=title,
+            score=float(score) if score is not None else 0.0,
+            recording_id=recording_id,
+        )
+
+    async def _finalize_and_move(
+        self,
+        *,
+        meta: CollectedMetadata,
+        source_path: Path,
+        staged_path: Path,
+    ) -> None:
+        """Benennt + verschiebt eine getaggte Datei konsistent zur AcoustID-Wahrheit.
+
+        - Zielpfad via ``compute_file_path`` aus den korrigierten artist/title/album.
+        - Ziel existiert nicht → verschieben, leere Alt-Ordner bis destination löschen.
+        - Ziel existiert, gleicher Song → bessere Version gewinnt (is_better_version),
+          sonst bleibt die existierende Datei (die neue wird verworfen).
+        - Ziel existiert, anderer Song (Kollision) → neue Datei verwerfen + Error-Log
+          mit allen relevanten Infos. Kein Überschreiben der Bibliothek.
+        """
+        result = meta.result
+        track = meta.track
+        enriched = meta.enriched
+        final_path = compute_file_path(
+            self._settings.destination,
+            result.artist,
+            result.title,
+            track.stream_title,
+            album=enriched.album if enriched and enriched.album else None,
+        )
+
+        if final_path == source_path:
+            # Gleicher Pfad: getaggte Staging-Datei ersetzt die Originaldatei
+            # (in-place), dann Katalog aktualisieren.
+            try:
+                shutil.move(str(staged_path), str(final_path))
+            except OSError as exc:
+                self._log.error(
+                    "[%s] In-place-Ersetzen fehlgeschlagen — Original bleibt unverändert: %s (%s)",
+                    self._name,
+                    final_path,
+                    exc,
+                )
+                safe_unlink(staged_path)
+                return
+            self._log.info("[%s] Bestandsdatei aktualisiert: %s", self._name, final_path)
+            await self._upsert_final(final_path, meta)
+            return
+
+        if not final_path.exists():
+            # Ziel frei → verschieben (EXDEV-sicher), leere Alt-Ordner aufräumen.
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(staged_path), str(final_path))
+            except OSError as exc:
+                self._log.error(
+                    "[%s] Verschieben nach %s fehlgeschlagen: %s",
+                    self._name,
+                    final_path,
+                    exc,
+                )
+                safe_unlink(staged_path)
+                return
+            self._log.info("[%s] Umbenannt: %s -> %s", self._name, source_path.name, final_path)
+            safe_unlink(source_path, parents_root=self._settings.destination)
+            await self._upsert_final(final_path, meta)
+            return
+
+        # ── Ziel existiert bereits ──
+        existing_tags = await asyncio.to_thread(read_tags_from_file, final_path)
+        existing_recording_id = existing_tags.get("recording_id")
+        same_song = bool(existing_recording_id) and existing_recording_id == result.recording_id
+
+        if same_song:
+            # Gleicher Song → bessere Version gewinnt.
+            existing_score = existing_tags.get("acoustid_score")
+            existing_audio = await asyncio.to_thread(read_audio_from_file, final_path)
+            new_audio = await asyncio.to_thread(read_audio_from_file, staged_path)
+            new_wins = is_better_version(
+                result.score,
+                new_audio["bitrate"],
+                new_audio["sample_rate"],
+                float(existing_score) if existing_score is not None else None,
+                existing_audio["bitrate"],
+                existing_audio["sample_rate"],
+            )
+            if new_wins:
+                self._log.info(
+                    "[%s] Bessere Version gewinnt: %s ersetzt %s",
+                    self._name,
+                    source_path.name,
+                    final_path.name,
+                )
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.move(str(staged_path), str(final_path))
+                except OSError as exc:
+                    self._log.error("[%s] Ersetzen fehlgeschlagen: %s", self._name, exc)
+                    safe_unlink(staged_path)
+                    return
+                safe_unlink(source_path, parents_root=self._settings.destination)
+                await self._upsert_final(final_path, meta)
+            else:
+                self._log.info(
+                    "[%s] Bestehende Version gleich/besser — neue verworfen: %s",
+                    self._name,
+                    source_path.name,
+                )
+                safe_unlink(staged_path)
+                safe_unlink(source_path, parents_root=self._settings.destination)
+            return
+
+        # Kollision: anderer Song am Ziel → neue Datei verwerfen + Error-Log.
+        self._log.error(
+            "[COLLISION] %s — Ziel %s gehört einem anderen Song (recording_id=%r vs %r). "
+            "Neue Datei verworfen: artist=%r title=%r score=%.4f alt_pfad=%s",
+            source_path.name,
+            final_path,
+            existing_recording_id,
+            result.recording_id,
+            result.artist,
+            result.title,
+            result.score,
+            source_path,
+        )
+        safe_unlink(staged_path)
+        safe_unlink(source_path, parents_root=self._settings.destination)
+
+    async def _upsert_final(self, final_path: Path, meta: CollectedMetadata) -> None:
+        """Schreibt die finalen Datei-Infos in den Katalog (falls vorhanden)."""
+        if self._catalog is None:
+            return
+        await self._catalog_upsert(
+            final_path,
+            meta.result,
+            meta.mb_data,
+            meta.enriched,
+            meta.deezer_data,
+            has_cover=(meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich) is not None,
+        )
 
     def _log_changed_tags(self, path: Path, before: dict[str, Any], station_name: str) -> None:
         """Loggt, welche Tags sich durch die Anreicherung tatsächlich geändert haben."""
@@ -759,16 +905,20 @@ class FileProcessor:
             existing_tags = read_tags_from_file(final_path)
             existing_recording_id = existing_tags.get("recording_id")
             if existing_recording_id and result.recording_id and existing_recording_id != result.recording_id:
-                # Echter Namens-Kollision zwischen verschiedenen Songs (Sanitizing-Effekt).
-                # Neuen eindeutigen Pfad mit recording_id-Suffix wählen — beide Songs behalten.
-                stem = final_path.stem
-                suffix_id = result.recording_id[:8]
-                final_path = final_path.with_name(f"{stem} [{suffix_id}].mp3")
-                self._log.info(
-                    "[%s] Namens-Kollision mit anderem Song — alternativer Pfad: %s",
-                    self._name,
-                    final_path.name,
+                # Echte Namens-Kollision zwischen verschiedenen Songs (Sanitizing-Effekt).
+                # → neue Datei verwerfen + Error-Log mit allen Infos (kein Suffix).
+                self._log.error(
+                    "[COLLISION] %s — Ziel %s gehört einem anderen Song (recording_id=%r vs %r). "
+                    "Neue Datei verworfen: artist=%r title=%r score=%.4f",
+                    work_path.name,
+                    final_path,
+                    existing_recording_id,
+                    result.recording_id,
+                    result.artist,
+                    result.title,
+                    result.score,
                 )
+                return "", None, None
             else:
                 existing_score = read_acoustid_score(final_path)
                 if existing_score is not None and existing_score >= result.score:
@@ -921,13 +1071,9 @@ class FileProcessor:
         track = meta.track
         enriched = meta.enriched
         deezer_data = meta.deezer_data
-        deezer_cover = meta.deezer_cover
-        cover_from_caa = meta.cover_from_caa
-        cover_from_enrich = meta.cover_from_enrich
         deezer_attempted = meta.deezer_attempted
-        mb_data = meta.mb_data
 
-        provenance, final_path, delete_old = await self._compute_destination_and_score(
+        provenance, final_path, _delete_old = await self._compute_destination_and_score(
             result,
             track,
             enriched,
@@ -996,40 +1142,16 @@ class FileProcessor:
             return
 
         # ── Phase 9: Atomarer Move zu destination + ggf. alte Datei löschen ──
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.move(str(stage_path), str(final_path))
-        except OSError:
-            self._log.error(
-                "[DELETE] %s — Grund: Verschieben nach %s fehlgeschlagen",
-                stage_path.name,
-                final_path,
-            )
-            self._cleanup_file(stage_path)
-            return
+        # _finalize_and_move behandelt: Ziel frei → verschieben; gleicher Song →
+        # bessere Version gewinnt; Kollision (anderer Song) → verwerfen + Error-Log.
+        await self._finalize_and_move(meta=meta, source_path=work_path, staged_path=stage_path)
 
-        self._log.info("[%s] Fertig: %s", self._name, final_path)
-
-        if delete_old is not None:
-            self._log.info(
-                "[DELETE] %s — Grund: durch bessere Version ersetzt",
-                delete_old.name,
-            )
-            safe_unlink(delete_old, parents_root=self._settings.destination)
-            if self._catalog is not None:
-                await self._catalog.remove(str(delete_old))
-
-        # ── Phase 10: Katalog-Upsert + Eviction ──
+        # Eviction nach erfolgreichem Abschluss
         if self._catalog is not None:
-            await self._catalog_upsert(
-                final_path,
-                result,
-                mb_data,
-                enriched,
-                deezer_data,
-                has_cover=(deezer_cover or cover_from_caa or cover_from_enrich) is not None,
+            await self._maybe_evict(
+                meta.deezer_data.rank if meta.deezer_data else None,
+                final_path=final_path,
             )
-            await self._maybe_evict(deezer_data.rank if deezer_data else None, final_path=final_path)
 
     async def _write_tags(
         self,
@@ -1064,6 +1186,7 @@ class FileProcessor:
                     artist_image=meta.artist_image,
                     lyrics=meta.lyrics,
                     deezer=meta.deezer_data,
+                    artist_mbid=result.artist_mbid,
                 )
                 last_exc = None
                 break

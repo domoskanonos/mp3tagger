@@ -606,13 +606,17 @@ class TestEnrichExistingFiles:
         )
         proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._fingerprint.fingerprint = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
         proc._cover_provider.fetch_recording_data.return_value = None
 
         await proc.enrich_existing_files()
 
-        audio2 = ID3(f)
+        # Neue Benennung: Album-Unterordner (konsistent zu neuen MP3s).
+        expected = proc._settings.destination / "Artist" / "Great Album" / "Artist - Title.mp3"
+        assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        audio2 = ID3(expected)
         assert (alb := audio2.get("TALB")) is not None and alb.text == ["Great Album"]
         assert (g := audio2.get("TCON")) is not None and g.text == ["Rock"]
 
@@ -657,6 +661,7 @@ class TestEnrichExistingFiles:
         # alle Provider liefern nichts
         proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
         proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._fingerprint.fingerprint = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
         proc._cover_provider.fetch_recording_data.return_value = None
@@ -695,6 +700,7 @@ class TestEnrichExistingFiles:
         )
         proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._fingerprint.fingerprint = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
         proc._cover_provider.fetch_recording_data.return_value = None
