@@ -38,7 +38,7 @@ from radio_ripper.services.metadata_deezer import DeezerData, DeezerMetadataProv
 from radio_ripper.services.metadata_itunes import MetadataProvider
 from radio_ripper.services.metadata_musicbrainz import CoverArtProvider
 from radio_ripper.services.popularity import PopularityProvider
-from radio_ripper.services.tagging import TrackTagger, read_acoustid_score
+from radio_ripper.services.tagging import TrackTagger
 
 _TAG_WRITE_MAX_ATTEMPTS = 3
 _TAG_WRITE_BASE_DELAY = 0.5
@@ -433,16 +433,20 @@ class FileProcessor:
                 return
             self._log.info("[%s] Durchsuche %d Bestandsdateien nach fehlenden Tags ...", self._name, len(mp3_files))
 
-            async def _scan_one(path: Path) -> bool:
+            async def _scan_one(path: Path) -> dict[str, Any] | None:
                 try:
                     tags = await asyncio.to_thread(read_tags_from_file, path)
-                    return not tags.get("album") or not tags.get("genre") or not tags.get("has_cover")
+                    if not tags.get("album") or not tags.get("genre") or not tags.get("has_cover"):
+                        return tags
                 except Exception:
                     self._log.debug("[%s] Tags nicht lesbar, überspringe: %s", self._name, path)
-                    return False
+                return None
 
             scan_results = await asyncio.gather(*(_scan_one(p) for p in mp3_files), return_exceptions=True)
-            candidates = {p: {} for p, is_missing in zip(mp3_files, scan_results, strict=True) if is_missing is True}
+            candidates = {}
+            for p, tags in zip(mp3_files, scan_results, strict=True):
+                if isinstance(tags, dict):
+                    candidates[p] = tags
 
         if not candidates:
             self._log.info("[%s] Keine Bestandsdateien mit fehlenden Tags gefunden.", self._name)
@@ -507,26 +511,7 @@ class FileProcessor:
             if not artist or not title:
                 return  # nicht umbenennbar
 
-            result = self._build_result_from_tags(tags)
-            enriched = EnrichedInfo(album=tags.get("album") or None)
-            track = TrackInfo(
-                stream_title=f"{artist} - {title}",
-                artist=artist,
-                title=title,
-            )
-            meta = CollectedMetadata(
-                result=result,
-                track=track,
-                enriched=enriched,
-                mb_data=None,
-                deezer_data=None,
-                deezer_cover=None,
-                cover_from_caa=None,
-                cover_from_enrich=None,
-                deezer_attempted=False,
-                artist_image=None,
-                lyrics=None,
-            )
+            meta = self._build_metadata_from_tags(tags)
             await self._finalize_and_move(meta=meta, source_path=path, staged_path=path)
 
         await asyncio.gather(*(_normalize_one(p) for p in mp3_files), return_exceptions=True)
@@ -623,6 +608,36 @@ class FileProcessor:
             title=title,
             score=float(score) if score is not None else 0.0,
             recording_id=recording_id,
+        )
+
+    @staticmethod
+    def _build_metadata_from_tags(tags: dict[str, Any]) -> CollectedMetadata:
+        """Baut CollectedMetadata aus vorhandenen ID3-Tags (ohne API-Calls).
+
+        Verwendet für rein lokale Flows wie ``normalize_filenames`` — das
+        Gegenstück zu ``_collect_metadata`` (das die API-Anreicherung macht).
+        """
+        result = FileProcessor._build_result_from_tags(tags)
+        artist = result.artist
+        title = result.title
+        enriched = EnrichedInfo(album=tags.get("album") or None)
+        track = TrackInfo(
+            stream_title=f"{artist} - {title}",
+            artist=artist,
+            title=title,
+        )
+        return CollectedMetadata(
+            result=result,
+            track=track,
+            enriched=enriched,
+            mb_data=None,
+            deezer_data=None,
+            deezer_cover=None,
+            cover_from_caa=None,
+            cover_from_enrich=None,
+            deezer_attempted=False,
+            artist_image=None,
+            lyrics=None,
         )
 
     async def _finalize_and_move(
@@ -958,17 +973,14 @@ class FileProcessor:
         enriched: EnrichedInfo | None,
         work_path: Path,
     ) -> tuple[str, Path | None, Path | None]:
-        """Berechnet Zielpfad + Versions-Vergleich mit bestehenden Dateien.
+        """Berechnet Zielpfad + Katalog-basierten Versionsvergleich.
 
         Returns (provenance, final_path, delete_old).
         delete_old ist None wenn keine alte Datei ersetzt wird.
 
-        Priorität:
-          1. Katalog-Abfrage via ``recording_id`` — falls gleiche Version
-             (gleiche MBID + gleiche ISRC) vorliegt, vergleiche Score/Bitrate
-             per :func:`is_better_version` und ersetze die schlechtere Datei.
-          2. Pfad-Kollision (gleicher Zielpfad) — Score-Vergleich via ID3
-             (Legacy-Verhalten, Fallback für Dateien ohne ISRC).
+        Der Zielpfad-Move + die Pfad-Duplikat-Erkennung (gleicher Zielpfad)
+        übernimmt :meth:`_finalize_and_move` — hier wird nur die Katalog-Abfrage
+        via ``recording_id`` geprüft (gleiche MBID → bessere Version gewinnt).
         """
         provenance = f"{self._name}/{self._name}"
         album = enriched.album if enriched and enriched.album else None
@@ -991,7 +1003,7 @@ class FileProcessor:
             to_delete: list[Path] = []
             for ev in existing_versions:
                 if ev.file_path == str(final_path):
-                    continue  # wird über Pfad-Fallback behandelt
+                    continue  # wird über Pfad-Fallback in _finalize_and_move behandelt
                 candidate = Path(ev.file_path)
                 if not candidate.exists():
                     # Verwaister DB-Eintrag — sofort bereinigen
@@ -1038,43 +1050,6 @@ class FileProcessor:
                     )
                     safe_unlink(extra, parents_root=self._settings.destination)
                     await self._catalog.remove(str(extra))
-
-        # ── Schritt 2: Pfad-Fallback (gleicher Zielpfad) ──
-        if final_path.exists() and delete_old is None:
-            # Prüfen ob die existierende Datei ein anderer Song ist (andere recording_id)
-            existing_tags = read_tags_from_file(final_path)
-            existing_recording_id = existing_tags.get("recording_id")
-            if existing_recording_id and result.recording_id and existing_recording_id != result.recording_id:
-                # Echte Namens-Kollision zwischen verschiedenen Songs (Sanitizing-Effekt).
-                # → neue Datei verwerfen + Error-Log mit allen Infos (kein Suffix).
-                self._log.error(
-                    "[COLLISION] %s — Ziel %s gehört einem anderen Song (recording_id=%r vs %r). "
-                    "Neue Datei verworfen: artist=%r title=%r score=%.4f",
-                    work_path.name,
-                    final_path,
-                    existing_recording_id,
-                    result.recording_id,
-                    result.artist,
-                    result.title,
-                    result.score,
-                )
-                return "", None, None
-            else:
-                existing_score = read_acoustid_score(final_path)
-                if existing_score is not None and existing_score >= result.score:
-                    self._log.info(
-                        "[DELETE] %s — Grund: existierende Datei hat besseren/gleichen Score (%.4f >= %.4f)",
-                        work_path.name,
-                        existing_score,
-                        result.score,
-                    )
-                    return "", None, None
-                self._log.info(
-                    "Neue Datei hat besseren Score (%.4f > %.4f) — alte wird nach erfolgreichem Move gelöscht",
-                    result.score,
-                    existing_score or 0.0,
-                )
-                delete_old = final_path
 
         return provenance, final_path, delete_old
 

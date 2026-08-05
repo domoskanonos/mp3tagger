@@ -22,6 +22,7 @@ from radio_ripper.services.fingerprint import (
 )
 from radio_ripper.services.metadata_deezer import DeezerData
 from radio_ripper.services.processor import (
+    CollectedMetadata,
     FileProcessor,
     _fetch_artist_image,
     _fetch_cover_data,
@@ -522,49 +523,87 @@ class TestComputeDestinationAndScore:
         assert final_path.parent == proc._settings.destination / "A"
         assert delete_old is None
 
-    async def test_existing_better_score_returns_empty(self, tmp_path: Path):
-        proc = _make_processor(tmp_path)
-        result_fp = FingerprintResult(artist="A", title="T", score=0.5, recording_id="r1")
-        track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        # Bestehende Datei mit Score 0.9 erstellen
-        dest_dir = proc._settings.destination / "A"
-        dest_dir.mkdir(parents=True)
-        existing = dest_dir / "A - T.mp3"
-        existing.write_bytes(b"\xff\xfb\x00\x00")
-        # ID3Tag mit Score 0.9 anlegen — wir mocken read_acoustid_score
-        import radio_ripper.services.processor as proc_mod
 
-        proc_mod.read_acoustid_score = lambda path: 0.9
-        provenance, final_path, delete_old = await proc._compute_destination_and_score(
-            result_fp,
-            track,
-            None,
-            tmp_path / "work.mp3",
+# ── _finalize_and_move ──
+
+
+class TestFinalizeAndMove:
+    def _meta(self, artist: str, title: str, recording_id: str) -> CollectedMetadata:
+        from radio_ripper.domain.models import EnrichedInfo as _EnrichedInfo
+
+        result = FingerprintResult(artist=artist, title=title, score=0.9, recording_id=recording_id)
+        track = TrackInfo(stream_title=f"{artist} - {title}", artist=artist, title=title)
+        return CollectedMetadata(
+            result=result,
+            track=track,
+            enriched=_EnrichedInfo(),
+            mb_data=None,
+            deezer_data=None,
+            deezer_cover=None,
+            cover_from_caa=None,
+            cover_from_enrich=None,
+            deezer_attempted=False,
+            artist_image=None,
+            lyrics=None,
         )
-        assert provenance == ""
-        assert final_path is None
-        assert delete_old is None
 
-    async def test_existing_worse_score_returns_delete_old(self, tmp_path: Path):
+    async def test_moves_to_expected_path(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
-        result_fp = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
-        track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        dest_dir = proc._settings.destination / "A"
-        dest_dir.mkdir(parents=True)
-        existing = dest_dir / "A - T.mp3"
-        existing.write_bytes(b"\xff\xfb\x00\x00")
-        import radio_ripper.services.processor as proc_mod
+        dest = proc._settings.destination / "Wrong"
+        dest.mkdir(parents=True)
+        src = dest / "Wrong - Song.mp3"
+        _write_mp3(src, size=512)
+        meta = self._meta("Artist", "Title", "r1")
+        await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+        target = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert target.exists(), f"expected {target}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        assert not src.exists()
 
-        proc_mod.read_acoustid_score = lambda path: 0.5
-        provenance, final_path, delete_old = await proc._compute_destination_and_score(
-            result_fp,
-            track,
-            None,
-            tmp_path / "work.mp3",
-        )
-        assert provenance == "tag/tag"
-        assert final_path is not None
-        assert delete_old == final_path
+    async def test_better_version_wins_at_target(self, tmp_path: Path):
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        # Bestehende Datei mit niedrigerem Score am Ziel
+        existing = dest / "Artist - Title.mp3"
+        _write_mp3(existing, size=512)
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        a = ID3()
+        a.add(TPE1(encoding=3, text="Artist"))
+        a.add(TIT2(encoding=3, text="Title"))
+        a.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="r1"))
+        a.add(TXXX(encoding=3, desc="AcoustID Score", text="0.5"))
+        a.save(existing, v2_version=3)
+        # Neue Datei (Score 0.9 via meta) an anderem Ort
+        src_dir = tmp_path / "staging"
+        src_dir.mkdir(parents=True)
+        src = src_dir / "Artist - Title.mp3"
+        _write_mp3(src, size=512)
+        meta = self._meta("Artist", "Title", "r1")
+        await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+        assert existing.exists()  # bessere Version ersetzt am Ziel
+        assert not src.exists()
+
+    async def test_collision_keeps_existing(self, tmp_path: Path):
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        existing = dest / "Artist - Title.mp3"
+        _write_mp3(existing, size=512)
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        a = ID3()
+        a.add(TPE1(encoding=3, text="Artist"))
+        a.add(TIT2(encoding=3, text="Title"))
+        a.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="other-rec"))
+        a.save(existing, v2_version=3)
+        src = tmp_path / "src.mp3"
+        _write_mp3(src, size=512)
+        meta = self._meta("Artist", "Title", "r1")
+        await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+        # Kollision: existierende (andere recording_id) bleibt, neue wird verworfen
+        assert existing.exists()
+        assert not src.exists()
 
 
 # ── _process_file (End-to-End Happy Path) ──
