@@ -74,25 +74,17 @@ class ITunesMetadataProvider(MetadataProvider):
         if not query:
             return None
         countries = ("DE", "US", "GB")
-        # Zusätzliche Query-Varianten: ohne Klammern (z.B. "(Original Mix)"),
-        # damit auch dann getroffen wird, wenn der erste Treffer falsch ist.
-        queries = [query]
-        stripped = _strip_parens(query).strip()
-        if stripped and stripped != query:
-            queries.append(stripped)
-        if title:
-            only_title = _strip_parens(title).strip()
-            if only_title and f"{artist} {only_title}".strip() != query:
-                queries.append(f"{artist} {only_title}".strip())
-
         hit = None
         for country in countries:
-            for q in queries:
-                hit = await self._search_one(q, country=country)
-                if hit:
-                    break
+            hit = await self._search_one(query, country=country)
             if hit:
                 break
+            if title:
+                stripped = _strip_parens(f"{artist} {title}").strip()
+                if stripped and stripped != query:
+                    hit = await self._search_one(stripped, country=country)
+                    if hit:
+                        break
         if hit is None:
             return None
         artwork = hit.get("artworkUrl100") or hit.get("artworkUrl60")
@@ -124,24 +116,16 @@ class ITunesMetadataProvider(MetadataProvider):
         )
 
     async def _search_one(self, query: str, country: str = "US") -> dict[str, Any] | None:
-        """iTunes-Suche im angegebenen Store-Land.
-
-        Holt bis zu 5 Treffer und wählt den ersten mit vorhandener Cover-URL
-        (und möglichst passendem Künstlernamen) — damit werden falsche erste
-        Treffer übersprungen, die kein Cover liefern würden.
-        """
+        """Einzelne iTunes-Suche im angegebenen Store-Land; gibt den ersten Treffer zurück oder ``None``."""
         try:
             payload = await self._client.get_json(
                 ITUNES_SEARCH_URL,
-                params={"term": query, "limit": 5, "entity": "song", "media": "music", "country": country},
+                params={"term": query, "limit": 1, "entity": "song", "media": "music", "country": country},
                 timeout=self._metadata_timeout,
             )
         except Exception:
             return None
         results: list[dict[str, Any]] = (payload or {}).get("results") or []
-        for r in results:
-            if r.get("artworkUrl100") or r.get("artworkUrl60"):
-                return r
         return results[0] if results else None
 
     async def fetch_artist_image(self, artist: str) -> bytes | None:
