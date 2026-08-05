@@ -134,7 +134,11 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
     # der Deezer-Rank kommt aus deezer_provider, nicht aus popularity_provider).
     popularity: PopularityProvider | None = DeezerPopularityChecker(client)
 
-    cover_archive: CoverArtArchiveProvider = CoverArtArchiveProvider(client, timeout=settings.cover_timeout)
+    cover_archive: CoverArtArchiveProvider = CoverArtArchiveProvider(
+        client,
+        timeout=settings.metadata_timeout,
+        cover_timeout=settings.cover_timeout,
+    )
 
     lyrics_provider = LRCLibProvider(client, timeout=5.0)
 

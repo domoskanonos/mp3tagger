@@ -45,9 +45,16 @@ class CoverArtArchiveProvider(CoverArtProvider):
     _USER_AGENT = "Radio-Ripper/2.0 (https://github.com/artokun/radioripper)"
     _MAX_RELEASES_TO_TRY = 5
 
-    def __init__(self, client: AsyncHttpClient, *, timeout: float = 8.0) -> None:
+    def __init__(
+        self,
+        client: AsyncHttpClient,
+        *,
+        timeout: float = 8.0,
+        cover_timeout: float | None = None,
+    ) -> None:
         self._client = client
         self._timeout = timeout
+        self._cover_timeout = cover_timeout if cover_timeout is not None else timeout
         self._last_mb_request: float = 0.0
         self._recording_cache: dict[str, dict[str, Any]] = {}
         # Serialisiert MB-Zugriffe: Rate-Limit (1 req/s) UND Cache-Schreibzugriffe
@@ -170,13 +177,20 @@ class CoverArtArchiveProvider(CoverArtProvider):
         (429/503/Timeout) tatsächlich zu retryen. Nur so gehen Covers unter Last
         nicht verloren. Aufrufer (z.B. ``_fetch_cover_data``) fangen den Fehler
         nach dem letzten Versuch ab und geben ``None`` zurück.
+
+        Der Lock schützt nur das Rate-Limit-Timing (prüfen → sleep →
+        Zeitstempel setzen), NICHT den HTTP-Call selbst: Ein einzelner
+        langsamer MB-Request blockiert dann nicht mehr alle anderen parallelen
+        Tasks, sondern verzögert nur seinen eigenen. Das 1-Request-pro-Sekunde
+        Limit bleibt gewahrt, weil jeder Task vor seinem Call ``_last_mb_request``
+        prüft und entsprechend schläft.
         """
         async with self._mb_lock:
             since_last = time.monotonic() - self._last_mb_request
             if since_last < 1.0:
                 await asyncio.sleep(1.0 - since_last)
             self._last_mb_request = time.monotonic()
-            return await self._client.get_json(url, params=params, timeout=self._timeout)
+        return await self._client.get_json(url, params=params, timeout=self._timeout)
 
     async def _fetch_recording_releases(
         self,
@@ -203,7 +217,7 @@ class CoverArtArchiveProvider(CoverArtProvider):
         return ((payload or {}).get("releases") or []) or None
 
     async def download_image(self, url: str) -> bytes | None:
-        return await download_image_or_none(self._client, url, timeout=self._timeout)
+        return await download_image_or_none(self._client, url, timeout=self._cover_timeout)
 
 
 __all__ = [
