@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from radio_ripper.infra.http import HttpxAsyncClient
+from radio_ripper.infra.http import HttpxAsyncClient, download_image_or_none
 
 
 @pytest.fixture
@@ -64,4 +64,37 @@ class TestHttpxAsyncClient:
             respx.get("https://example.com/err").respond(status_code=500)
             with pytest.raises(httpx.HTTPStatusError):
                 await client.get_text("https://example.com/err")
+        await client.aclose()
+
+
+class TestDownloadImageOrNone:
+    async def test_success(self, client: HttpxAsyncClient):
+        with respx.mock:
+            respx.get("https://example.com/img.jpg").respond(content=b"\xff\xd8\xff" + b"\x00" * 128)
+            data = await download_image_or_none(client, "https://example.com/img.jpg")
+        assert data is not None and len(data) > 64
+        await client.aclose()
+
+    async def test_retries_on_transient_failure(self, client: HttpxAsyncClient):
+        """1. Versuch schlägt fehl (Rate-Limit), Retry liefert das Bild — Cover geht nicht verloren."""
+        route = respx.get("https://example.com/flaky.jpg")
+        route.side_effect = [httpx.Response(429), httpx.Response(200, content=b"\xff\xd8\xff" + b"\x00" * 128)]
+        with respx.mock:
+            data = await download_image_or_none(client, "https://example.com/flaky.jpg")
+        assert data is not None and len(data) > 64
+        await client.aclose()
+
+    async def test_too_small_returns_none(self, client: HttpxAsyncClient):
+        with respx.mock:
+            respx.get("https://example.com/tiny.jpg").respond(content=b"\x00\x01")
+            data = await download_image_or_none(client, "https://example.com/tiny.jpg")
+        assert data is None
+        await client.aclose()
+
+    async def test_persistent_failure_returns_none(self, client: HttpxAsyncClient):
+        route = respx.get("https://example.com/down.jpg")
+        route.side_effect = [httpx.Response(500), httpx.Response(500), httpx.Response(500)]
+        with respx.mock:
+            data = await download_image_or_none(client, "https://example.com/down.jpg")
+        assert data is None
         await client.aclose()

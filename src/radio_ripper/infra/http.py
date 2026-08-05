@@ -116,14 +116,25 @@ async def download_image_or_none(client: AsyncHttpClient, url: str, *, timeout: 
     Zentrale Hilfsfunktion für alle Provider (iTunes, CAA, Deezer), die
     Cover-/Künstlerbilder abrufen — vermeidet Duplikation derselben
     Try/Except-Länge in mehreren Modulen.
+
+    Transiente Fehler (CDN-Rate-Limit, kurze Timeouts) werden mit kurzen
+    Retries überbrückt, damit vorhandene Covers nicht still verloren gehen.
     """
-    try:
-        data = await client.get_bytes(url, timeout=timeout)
-    except Exception:
-        return None
-    if not data or len(data) < 64:
-        return None
-    return data
+    import asyncio
+
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            data = await client.get_bytes(url, timeout=timeout)
+        except Exception:
+            if attempt < max_attempts:
+                await asyncio.sleep(0.3 * attempt)
+                continue
+            return None
+        if not data or len(data) < 64:
+            return None
+        return data
+    return None
 
 
 __all__ = ["AsyncHttpClient", "HttpxAsyncClient", "download_image_or_none"]
