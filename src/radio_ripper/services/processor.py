@@ -626,7 +626,7 @@ class FileProcessor:
             meta.mb_data,
             meta.enriched,
             meta.deezer_data,
-            has_cover=(meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich) is not None,
+            has_cover=(meta.cover_from_caa or meta.deezer_cover or meta.cover_from_enrich) is not None,
         )
 
     def _log_changed_tags(self, path: Path, before: dict[str, Any], station_name: str) -> None:
@@ -1163,12 +1163,17 @@ class FileProcessor:
     ) -> bool:
         """Phase 8: Ein-Pass-Tag-Write mit Retry. Gibt True bei Erfolg zurück."""
         result = meta.result
-        final_cover = meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich
+        # Cover-Priorität: CAA (verifiziert via recording_id) → Deezer → iTunes.
+        final_cover = meta.cover_from_caa or meta.deezer_cover or meta.cover_from_enrich
         if final_cover is None:
             self._log.warning(
-                "[%s] Kein Cover für %s gefunden (Deezer/CAA/iTunes lieferten nichts)",
+                "[%s] Kein Cover für %s gefunden (CAA/Deezer/iTunes lieferten nichts). "
+                "Gesucht mit: artist=%r title=%r recording_id=%r",
                 self._name,
                 stage_path.name,
+                result.artist,
+                result.title,
+                result.recording_id,
             )
 
         last_exc: Exception | None = None

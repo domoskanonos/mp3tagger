@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import itertools
+import time
+from collections.abc import AsyncIterator
+from typing import Any
+
 import pytest
 import respx
 
-from radio_ripper.infra.http import HttpxAsyncClient
+from radio_ripper.infra.http import AsyncHttpClient, HttpxAsyncClient
 from radio_ripper.services.metadata_musicbrainz import CoverArtArchiveProvider
 
 
@@ -16,6 +22,42 @@ def client():
 
 _MBZ_RECORDING_URL = "https://musicbrainz.org/ws/2/recording/"
 _CAA_FRONT_URL = "https://coverartarchive.org/release/"
+
+
+class _CountingClient(AsyncHttpClient):
+    """Zählt get_json-Calls und protokolliert deren Zeitstempel (Rate-Limit-Test)."""
+
+    def __init__(self) -> None:
+        self.get_json_times: list[float] = []
+        self._calls = 0
+
+    async def get_json(self, url: str, *, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
+        self._calls += 1
+        self.get_json_times.append(time.monotonic())
+        if "recording" in url:
+            return {"releases": [{"id": "rel-1", "status": "Official"}]}
+        return {}
+
+    async def get_text(self, url: str, *, timeout: float | None = None) -> str:
+        return ""
+
+    async def get_bytes(self, url: str, *, timeout: float | None = None) -> bytes:
+        return b""
+
+    def stream_binary(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> AsyncIterator[bytes]:
+        return iter([b""])  # type: ignore[return-value]
+
+    def response_headers(self) -> dict[str, str]:
+        return {}
+
+    async def aclose(self) -> None:
+        pass
 
 
 class TestCoverArtArchiveProvider:
@@ -67,3 +109,20 @@ class TestCoverArtArchiveProvider:
             result = await provider.fetch_cover_by_recording_id("rec-789")
         assert result is None
         await client.aclose()
+
+    async def test_rate_limit_serialized_under_concurrency(self):
+        """Parallele MB-Zugriffe dürfen NICHT im Burst feuern (Rate-Limit 1 req/s).
+
+        Regression: Vor dem Lock übersprangen parallele Tasks den Sleep und
+        schickten alle Requests gleichzeitig → MB 429 → Covers gingen verloren.
+        """
+        client = _CountingClient()
+        provider = CoverArtArchiveProvider(client, timeout=5.0)
+        await asyncio.gather(*(provider.fetch_recording_data(f"rec-{i}") for i in range(3)))
+        await client.aclose()
+
+        times = client.get_json_times
+        assert len(times) >= 3
+        # Zwischen aufeinanderfolgenden MB-Requests muss mindestens ~1s liegen.
+        for a, b in itertools.pairwise(times):
+            assert b - a >= 0.9, f"Rate-Limit verletzt: {b - a:.2f}s zwischen Requests"

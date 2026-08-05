@@ -51,6 +51,10 @@ class CoverArtArchiveProvider(CoverArtProvider):
         self._timeout = timeout
         self._last_mb_request: float = 0.0
         self._recording_cache: dict[str, dict[str, Any]] = {}
+        # Serialisiert MB-Zugriffe: Rate-Limit (1 req/s) UND Cache-Schreibzugriffe
+        # müssen atomar sein — sonst feuern parallele Tasks (max_concurrent) den
+        # MB-Endpunkt im Burst und das Rate-Limit (429) verschluckt Covers.
+        self._mb_lock = asyncio.Lock()
 
     async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
         """Ermittelt Releases zur MBID und versucht, das Front-Cover abzurufen."""
@@ -171,15 +175,21 @@ class CoverArtArchiveProvider(CoverArtProvider):
         url: str,
         params: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
-        """MusicBrainz-Rate-Limit: maximal 1 Request pro Sekunde."""
-        since_last = time.monotonic() - self._last_mb_request
-        if since_last < 1.0:
-            await asyncio.sleep(1.0 - since_last)
-        self._last_mb_request = time.monotonic()
-        try:
-            return await self._client.get_json(url, params=params, timeout=self._timeout)
-        except Exception:
-            return None
+        """MusicBrainz-Rate-Limit: maximal 1 Request pro Sekunde.
+
+        Das gesamte Rate-Limit (prüfen → sleep → timestamp setzen → request) läuft
+        unter einem Lock, damit parallele Tasks nicht gleichzeitig durchschlüpfen
+        und MB mit 429 antwortet (sonst gehen Covers im Batch verloren).
+        """
+        async with self._mb_lock:
+            since_last = time.monotonic() - self._last_mb_request
+            if since_last < 1.0:
+                await asyncio.sleep(1.0 - since_last)
+            self._last_mb_request = time.monotonic()
+            try:
+                return await self._client.get_json(url, params=params, timeout=self._timeout)
+            except Exception:
+                return None
 
     async def _fetch_recording_releases(
         self,
@@ -190,15 +200,19 @@ class CoverArtArchiveProvider(CoverArtProvider):
 
         Die Rohdaten werden in ``self._recording_cache`` zwischengespeichert,
         sodass ``fetch_cover_by_recording_id`` und ``fetch_recording_data``
-        sich den Netzwerkaufruf teilen.
+        sich den Netzwerkaufruf teilen. Cache-Schreibzugriffe laufen unter
+        dem Rate-Limit-Lock (parallel-sicher); der Request selbst nimmt den
+        Lock intern via _rate_limited_json (kein Doppel-Lock / Deadlock).
         """
-        if recording_id in self._recording_cache:
-            return (self._recording_cache[recording_id] or {}).get("releases") or []
+        async with self._mb_lock:
+            if recording_id in self._recording_cache:
+                return (self._recording_cache[recording_id] or {}).get("releases") or []
         payload = await self._rate_limited_json(
             self._MBZ_RECORDING_URL.format(mbid=recording_id),
             params={"fmt": "json", "inc": extra_inc},
         )
-        self._recording_cache[recording_id] = payload or {}
+        async with self._mb_lock:
+            self._recording_cache[recording_id] = payload or {}
         return ((payload or {}).get("releases") or []) or None
 
     async def download_image(self, url: str) -> bytes | None:

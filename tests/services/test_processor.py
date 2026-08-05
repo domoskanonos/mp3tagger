@@ -716,6 +716,43 @@ class TestEnrichExistingFiles:
         # Staging aufgeräumt
         assert not list((proc._settings.work_dir).rglob("enrich-*"))
 
+    async def test_caa_cover_wins_over_itunes(self, tmp_path: Path):
+        """Cover-Priorität: CAA (verifiziert via recording_id) gewinnt vor iTunes."""
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        from radio_ripper.services.tagging import ID3Tagger
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        proc._tagger = ID3Tagger()
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "Artist - Title.mp3"
+        _write_mp3(f, size=512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="rec-12345"))
+        audio.save(f, v2_version=3)
+
+        proc._metadata.fetch.return_value = EnrichedInfo(  # type: ignore[attr-defined]
+            artist="Artist", title="Title", artwork_url="http://itunes.example/cover.jpg"
+        )
+        proc._metadata.download_image = AsyncMock(return_value=b"ITUNES-COVER-DATA")  # type: ignore[method-assign]
+        proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        # CAA liefert ein anderes Cover (soll gewinnen)
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = b"CAA-COVER-DATA"
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        await proc.enrich_existing_files()
+
+        target = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert target.exists()
+        t = ID3(target)
+        apic = t.get("APIC:Cover")
+        assert apic is not None
+        assert apic.data == b"CAA-COVER-DATA"
+
 
 class TestProcessFileFailurePaths:
     async def test_fingerprint_failure_cleans_up(self, tmp_path: Path):
