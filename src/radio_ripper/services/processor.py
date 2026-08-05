@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -409,7 +408,7 @@ class FileProcessor:
 
         Nutzt den GLEICHEN Flow wie neue MP3s (_collect_metadata + _write_tags),
         aber ohne Fingerprint, ohne Duplikat-/Popularitätsprüfung und ohne Löschen.
-        Schreiben erfolgt über eine Staging-Kopie + atomaren os.replace.
+        Schreiben erfolgt über eine Staging-Kopie + Move zurück (EXDEV-sicher).
         """
         tags = await asyncio.to_thread(read_tags_from_file, path)
         recording_id = tags.get("recording_id") or ""
@@ -455,10 +454,16 @@ class FileProcessor:
         )
         if ok:
             try:
-                os.replace(str(stage), str(path))
-            except OSError:
-                self._log.error("[%s] Atomarer Replace fehlgeschlagen: %s", self._name, path.name)
-            finally:
+                # shutil.move nutzt intern os.rename (atomar) und fällt bei
+                # verschiedenen Dateisystemen (EXDEV) auf copy+delete zurück.
+                shutil.move(str(stage), str(path))
+            except OSError as exc:
+                self._log.error(
+                    "[%s] Ersetzen fehlgeschlagen — Original bleibt unverändert: %s (%s)",
+                    self._name,
+                    path.name,
+                    exc,
+                )
                 safe_unlink(stage)
         else:
             safe_unlink(stage)

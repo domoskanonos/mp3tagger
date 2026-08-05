@@ -667,6 +667,49 @@ class TestEnrichExistingFiles:
         # kein Rest im work_dir (Staging-Kopie aufgeräumt)
         assert not list((proc._settings.work_dir).rglob("enrich-*"))
 
+    async def test_enrich_keeps_original_when_replace_fails(self, tmp_path: Path):
+        """Ersetzen schlägt fehl → Original bleibt unverändert, Staging aufgeräumt."""
+        from unittest.mock import patch
+
+        from mutagen.id3 import ID3, TIT2, TPE1
+
+        from radio_ripper.services.tagging import ID3Tagger
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        proc._tagger = ID3Tagger()
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "Artist - Title.mp3"
+        _write_mp3(f, size=512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.save(f, v2_version=3)
+        before = f.read_bytes()
+
+        proc._metadata.fetch.return_value = EnrichedInfo(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            album="Great Album",
+            genre="Rock",
+        )
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        with patch(
+            "radio_ripper.services.processor.shutil.move",
+            side_effect=OSError("Invalid cross-device link"),
+        ):
+            await proc.enrich_existing_files()
+
+        # Original unverändert
+        assert f.read_bytes() == before
+        # Staging aufgeräumt
+        assert not list((proc._settings.work_dir).rglob("enrich-*"))
+
 
 class TestProcessFileFailurePaths:
     async def test_fingerprint_failure_cleans_up(self, tmp_path: Path):
