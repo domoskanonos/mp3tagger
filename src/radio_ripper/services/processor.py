@@ -623,6 +623,15 @@ class FileProcessor:
         )
 
     @staticmethod
+    def _effective_isrc(meta: CollectedMetadata) -> str | None:
+        """ISRC der neuen Aufnahme (Deezer → MB), identisch zu _write_tags."""
+        if meta.deezer_data and meta.deezer_data.isrc:
+            return meta.deezer_data.isrc
+        if meta.mb_data and meta.mb_data.isrcs:
+            return meta.mb_data.isrcs[0]
+        return None
+
+    @staticmethod
     def _build_metadata_from_tags(tags: dict[str, Any]) -> CollectedMetadata:
         """Baut CollectedMetadata aus vorhandenen ID3-Tags (ohne API-Calls).
 
@@ -744,6 +753,23 @@ class FileProcessor:
         existing_tags = await asyncio.to_thread(read_tags_from_file, final_path)
         existing_recording_id = existing_tags.get("recording_id")
         same_song = bool(existing_recording_id) and existing_recording_id == result.recording_id
+        if not same_song:
+            # ISRC-Fallback: Verschiedene recording_ids (z.B. Album- vs.
+            # Remaster-Version desselben Songs, Radio-Edit) → dieselbe Aufnahme,
+            # wenn der ISRC übereinstimmt. Nur so werden spätere Wiederholungen
+            # desselben Songs nicht als "Kollision" verworfen.
+            existing_isrc = existing_tags.get("isrc")
+            new_isrc = self._effective_isrc(meta)
+            if existing_isrc and new_isrc and existing_isrc == new_isrc:
+                self._log.info(
+                    "[%s] ISRC-Fallback: %s == %s (recording_id %s != %s) — gleicher Song",
+                    self._name,
+                    existing_isrc,
+                    new_isrc,
+                    existing_recording_id,
+                    result.recording_id,
+                )
+                same_song = True
 
         if same_song:
             # Gleicher Song → bessere Version gewinnt.
@@ -789,12 +815,14 @@ class FileProcessor:
 
         # Kollision: anderer Song am Ziel → neue Datei verwerfen + Error-Log.
         self._log.error(
-            "[COLLISION] %s — Ziel %s gehört einem anderen Song (recording_id=%r vs %r). "
+            "[COLLISION] %s — Ziel %s gehört einem anderen Song (recording_id=%r vs %r, isrc=%r vs %r). "
             "Neue Datei verworfen: artist=%r title=%r score=%.4f alt_pfad=%s",
             source_path.name,
             final_path,
             existing_recording_id,
             result.recording_id,
+            existing_tags.get("isrc"),
+            self._effective_isrc(meta),
             result.artist,
             result.title,
             result.score,

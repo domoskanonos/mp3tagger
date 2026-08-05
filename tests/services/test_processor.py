@@ -15,6 +15,7 @@ from radio_ripper.domain.models import (
     MusicBrainzData,
     TrackInfo,
 )
+from radio_ripper.infra.catalog import read_tags_from_file
 from radio_ripper.infra.config import Settings
 from radio_ripper.services.fingerprint import (
     FingerprintError,
@@ -714,6 +715,104 @@ class TestFinalizeAndMove:
         meta = self._meta("Artist", "Title", "r1")
         ok = await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
         assert ok is True
+
+    def _write_existing(
+        self, path: Path, *, recording_id: str, score: str | None = None, isrc: str | None = None
+    ) -> None:
+        """Bestehende Ziel-Datei mit recording_id/score/isrc vorbereiten."""
+        from mutagen.id3 import ID3, TIT2, TPE1, TSRC, TXXX
+
+        a = ID3()
+        a.add(TPE1(encoding=3, text="Artist"))
+        a.add(TIT2(encoding=3, text="Title"))
+        a.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text=recording_id))
+        if score is not None:
+            a.add(TXXX(encoding=3, desc="AcoustID Score", text=score))
+        if isrc is not None:
+            a.add(TSRC(encoding=3, text=isrc))
+        a.save(path, v2_version=3)
+
+    def _meta_with_isrc(self, recording_id: str, isrc: str, score: float) -> CollectedMetadata:
+        """Meta mit Deezer-ISRC (Quelle für den ISRC-Fallback)."""
+        from radio_ripper.domain.models import EnrichedInfo as _EnrichedInfo
+
+        result = FingerprintResult(artist="Artist", title="Title", score=score, recording_id=recording_id)
+        track = TrackInfo(stream_title="Artist - Title", artist="Artist", title="Title")
+        return CollectedMetadata(
+            result=result,
+            track=track,
+            enriched=_EnrichedInfo(),
+            mb_data=None,
+            deezer_data=DeezerData(isrc=isrc),
+            deezer_cover=None,
+            cover_from_caa=None,
+            cover_from_enrich=None,
+            deezer_attempted=True,
+            artist_image=None,
+            lyrics=None,
+        )
+
+    async def test_isrc_fallback_new_version_wins(self, tmp_path: Path):
+        """Option 1: verschiedene recording_ids + gleicher ISRC = gleicher Song → bessere Version ersetzt."""
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        existing = dest / "Artist - Title.mp3"
+        _write_mp3(existing, size=512)
+        self._write_existing(existing, recording_id="old-rec", score="0.5", isrc="ISRC1")
+
+        # staged = bereits getaggte neue Version (wie Phase 8 in der Pipeline)
+        src = tmp_path / "src.mp3"
+        _write_mp3(src, size=512)
+        self._write_existing(src, recording_id="new-rec", score="0.9", isrc="ISRC1")
+        meta = self._meta_with_isrc("new-rec", "ISRC1", 0.9)
+        ok = await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+
+        assert ok is True
+        assert not src.exists()
+        # Bestehende Datei wurde ersetzt (neue, bessere Version)
+        tags = read_tags_from_file(existing)
+        assert tags["recording_id"] == "new-rec"
+
+    async def test_isrc_fallback_existing_wins(self, tmp_path: Path):
+        """Option 1: ISRC-Match, aber bestehende Version ist besser → neue wird verworfen."""
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        existing = dest / "Artist - Title.mp3"
+        _write_mp3(existing, size=512)
+        self._write_existing(existing, recording_id="old-rec", score="0.95", isrc="ISRC1")
+
+        src = tmp_path / "src.mp3"
+        _write_mp3(src, size=512)
+        self._write_existing(src, recording_id="new-rec", score="0.5", isrc="ISRC1")
+        meta = self._meta_with_isrc("new-rec", "ISRC1", 0.5)
+        ok = await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+
+        assert ok is False
+        assert not src.exists()
+        tags = read_tags_from_file(existing)
+        assert tags["recording_id"] == "old-rec", "bessere bestehende Version bleibt"
+
+    async def test_no_isrc_match_stays_collision(self, tmp_path: Path):
+        """Verschiedene recording_ids UND verschiedene ISRCs → weiterhin Kollision."""
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        existing = dest / "Artist - Title.mp3"
+        _write_mp3(existing, size=512)
+        self._write_existing(existing, recording_id="old-rec", score="0.5", isrc="OTHER")
+
+        src = tmp_path / "src.mp3"
+        _write_mp3(src, size=512)
+        self._write_existing(src, recording_id="new-rec", score="0.9", isrc="ISRC1")
+        meta = self._meta_with_isrc("new-rec", "ISRC1", 0.9)
+        ok = await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+
+        assert ok is False
+        assert existing.exists()
+        tags = read_tags_from_file(existing)
+        assert tags["recording_id"] == "old-rec", "anderer Song bleibt unangetastet"
 
 
 # ── _process_file (End-to-End Happy Path) ──
