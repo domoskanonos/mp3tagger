@@ -1044,9 +1044,13 @@ class FileProcessor:
         final_cover = meta.deezer_cover or meta.cover_from_caa or meta.cover_from_enrich
         if final_cover is None:
             self._log.warning(
-                "[%s] Kein Cover für %s gefunden (Deezer/CAA/iTunes lieferten nichts)",
+                "[%s] Kein Cover für %s gefunden (Deezer/CAA/iTunes lieferten nichts). "
+                "Gesucht mit: artist=%r title=%r recording_id=%r",
                 self._name,
                 stage_path.name,
+                meta.result.artist,
+                meta.result.title,
+                meta.result.recording_id,
             )
 
         last_exc: Exception | None = None
