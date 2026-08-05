@@ -27,6 +27,7 @@ def _make_record(
     album: str | None = "Album",
     genre: str | None = "Rock",
     has_cover: bool = True,
+    has_performer: bool = True,
     bitrate: int | None = 320,
     sample_rate: int | None = 44100,
     duration_ms: int | None = 200000,
@@ -42,6 +43,7 @@ def _make_record(
         album=album,
         genre=genre,
         has_cover=has_cover,
+        has_performer=has_performer,
         bitrate=bitrate,
         sample_rate=sample_rate,
         duration_ms=duration_ms,
@@ -191,9 +193,10 @@ class TestFindMissingTags:
         await catalog.upsert(_make_record(file_path="/no-album.mp3", album=None))
         await catalog.upsert(_make_record(file_path="/no-genre.mp3", genre=None))
         await catalog.upsert(_make_record(file_path="/no-cover.mp3", has_cover=False))
+        await catalog.upsert(_make_record(file_path="/no-performer.mp3", has_performer=False))
         missing = await catalog.find_missing_tags()
         paths = {r.file_path for r in missing}
-        assert paths == {"/no-album.mp3", "/no-genre.mp3", "/no-cover.mp3"}
+        assert paths == {"/no-album.mp3", "/no-genre.mp3", "/no-cover.mp3", "/no-performer.mp3"}
 
 
 # ── count, remove, exists_by_path ────────────────────────────────────────────
@@ -268,6 +271,7 @@ class TestReconcile:
                     "acoustid_score": 0.9,
                     "popularity_rank": 12345,
                     "has_cover": True,
+                    "has_performer": False,
                 },
             ),
             patch(

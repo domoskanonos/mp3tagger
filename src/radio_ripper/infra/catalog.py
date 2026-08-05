@@ -73,6 +73,7 @@ class SongRecord:
     acoustid_score: float | None = None
     popularity_rank: int | None = None
     has_cover: bool = False
+    has_performer: bool = False
 
 
 @dataclass(slots=True)
@@ -152,6 +153,7 @@ CREATE TABLE IF NOT EXISTS songs (
     acoustid_score      REAL,
     popularity_rank     INTEGER,
     has_cover           INTEGER DEFAULT 0,
+    has_performer       INTEGER DEFAULT 0,
     created_at          TEXT DEFAULT (datetime('now')),
     updated_at          TEXT DEFAULT (datetime('now'))
 );
@@ -170,6 +172,7 @@ _MIGRATION_COLUMNS = (
     ("sample_rate", "INTEGER"),
     ("duration_ms", "INTEGER"),
     ("genre", "TEXT"),
+    ("has_performer", "INTEGER"),
 )
 
 
@@ -191,6 +194,7 @@ def _row_to_record(row: sqlite3.Row) -> SongRecord:
         acoustid_score=row["acoustid_score"],
         popularity_rank=row["popularity_rank"],
         has_cover=bool(row["has_cover"]),
+        has_performer=bool(row["has_performer"]),
     )
 
 
@@ -225,6 +229,7 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
             "genre": None,
             "acoustid_score": None,
             "has_cover": False,
+            "has_performer": False,
         }
     except Exception:
         return {
@@ -237,6 +242,7 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
             "genre": None,
             "acoustid_score": None,
             "has_cover": False,
+            "has_performer": False,
         }
 
     artist = title = album = genre = None
@@ -268,6 +274,9 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
             popularity_rank = int(popularity_raw)
 
     has_cover = any(frame.__class__.__name__ == "APIC" for frame in tags.getall("APIC"))
+    has_performer = any(
+        frame.__class__.__name__ == "APIC" and getattr(frame, "type", None) == 8 for frame in tags.getall("APIC")
+    )
 
     return {
         "recording_id": recording_id,
@@ -280,6 +289,7 @@ def read_tags_from_file(path: Path) -> dict[str, Any]:
         "acoustid_score": acoustid_score,
         "popularity_rank": popularity_rank,
         "has_cover": has_cover,
+        "has_performer": has_performer,
     }
 
 
@@ -340,8 +350,8 @@ class SqliteCatalog(Catalog):
                 recording_id, isrc, artist, title, album, genre,
                 release_group_type, station_name, file_path, file_size,
                 bitrate, sample_rate, duration_ms,
-                acoustid_score, popularity_rank, has_cover, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                acoustid_score, popularity_rank, has_cover, has_performer, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(file_path) DO UPDATE SET
                 recording_id=excluded.recording_id,
                 isrc=excluded.isrc,
@@ -358,6 +368,7 @@ class SqliteCatalog(Catalog):
                 acoustid_score=excluded.acoustid_score,
                 popularity_rank=excluded.popularity_rank,
                 has_cover=excluded.has_cover,
+                has_performer=excluded.has_performer,
                 updated_at=datetime('now')
             """,
             (
@@ -377,6 +388,7 @@ class SqliteCatalog(Catalog):
                 rec.acoustid_score,
                 rec.popularity_rank,
                 1 if rec.has_cover else 0,
+                1 if rec.has_performer else 0,
             ),
         )
 
@@ -475,6 +487,7 @@ class SqliteCatalog(Catalog):
             WHERE (album IS NULL OR album = '')
                OR (genre IS NULL OR genre = '')
                OR has_cover = 0
+               OR has_performer = 0
             """
         )
         return [_row_to_record(r) for r in cur.fetchall()]
@@ -614,6 +627,7 @@ class SqliteCatalog(Catalog):
             acoustid_score=tags["acoustid_score"],
             popularity_rank=tags["popularity_rank"],
             has_cover=tags["has_cover"],
+            has_performer=tags["has_performer"],
         )
 
     # ── close ──────────────────────────────────────────────────────────────

@@ -129,25 +129,6 @@ class TestITunesMetadataProvider:
         assert len(data) > 64
         await client.aclose()
 
-    async def test_fetch_artist_image_happy(self, client: HttpxAsyncClient):
-        provider = ITunesMetadataProvider(client, metadata_timeout=5.0, cover_timeout=5.0)
-        with respx.mock:
-            respx.get("https://itunes.apple.com/search").respond(
-                json={"results": [{"artistName": "Dr. Dre", "artworkUrl100": "https://example.com/100x100bb.jpg"}]}
-            )
-            respx.get("https://example.com/600x600bb.jpg").respond(content=b"\xff\xd8\xff" + b"\x00" * 100)
-            data = await provider.fetch_artist_image("Dr. Dre")
-        assert data is not None
-        await client.aclose()
-
-    async def test_fetch_artist_image_no_results(self, client: HttpxAsyncClient):
-        provider = ITunesMetadataProvider(client, metadata_timeout=5.0, cover_timeout=5.0)
-        with respx.mock:
-            respx.get("https://itunes.apple.com/search").respond(json={"results": []})
-            data = await provider.fetch_artist_image("Unbekannt")
-        assert data is None
-        await client.aclose()
-
     async def test_download_image_returns_none_on_error(self, client: HttpxAsyncClient):
         provider = ITunesMetadataProvider(client)
         with respx.mock:

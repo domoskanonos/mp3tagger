@@ -627,7 +627,6 @@ class TestEnrichExistingFiles:
             genre="Rock",
         )
         proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._fingerprint.fingerprint = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
@@ -721,7 +720,6 @@ class TestEnrichExistingFiles:
             genre="Rock",
         )
         proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._fingerprint.fingerprint = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
@@ -760,7 +758,6 @@ class TestEnrichExistingFiles:
             artist="Artist", title="Title", artwork_url="http://itunes.example/cover.jpg"
         )
         proc._metadata.download_image = AsyncMock(return_value=b"ITUNES-COVER-DATA")  # type: ignore[method-assign]
-        proc._metadata.fetch_artist_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         # CAA liefert ein anderes Cover (soll gewinnen)
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = b"CAA-COVER-DATA"

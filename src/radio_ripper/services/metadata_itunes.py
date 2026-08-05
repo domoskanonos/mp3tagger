@@ -44,11 +44,6 @@ class MetadataProvider(ABC):
     async def download_image(self, url: str) -> bytes | None:
         """Cover-Bild herunterladen; ``None`` bei Fehler."""
 
-    async def fetch_artist_image(self, artist: str) -> bytes | None:
-        """Künstler-Porträt als Bytes oder ``None`` (Standard: nicht verfügbar)."""
-        del artist
-        return None
-
 
 class ITunesMetadataProvider(MetadataProvider):
     """iTunes Search API — Album, Jahr, Genre, iTunes-IDs, Cover-URL.
@@ -127,26 +122,6 @@ class ITunesMetadataProvider(MetadataProvider):
             return None
         results: list[dict[str, Any]] = (payload or {}).get("results") or []
         return results[0] if results else None
-
-    async def fetch_artist_image(self, artist: str) -> bytes | None:
-        """Künstler-Porträt über die iTunes Artist-Suche (entity=musicArtist)."""
-        if not artist:
-            return None
-        try:
-            payload = await self._client.get_json(
-                ITUNES_SEARCH_URL,
-                params={"term": artist, "limit": 1, "entity": "musicArtist", "media": "music", "country": "US"},
-                timeout=self._metadata_timeout,
-            )
-        except Exception:
-            return None
-        results: list[dict[str, Any]] = (payload or {}).get("results") or []
-        if not results:
-            return None
-        artwork = results[0].get("artworkUrl100") or results[0].get("artworkUrl60")
-        if not artwork:
-            return None
-        return await self.download_image(self._upgrade_artwork(artwork))
 
     async def download_image(self, url: str) -> bytes | None:
         return await download_image_or_none(self._client, url, timeout=self._cover_timeout)
