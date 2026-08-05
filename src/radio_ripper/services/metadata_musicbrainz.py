@@ -57,10 +57,17 @@ class CoverArtArchiveProvider(CoverArtProvider):
         self._mb_lock = asyncio.Lock()
 
     async def fetch_cover_by_recording_id(self, recording_id: str) -> bytes | None:
-        """Ermittelt Releases zur MBID und versucht, das Front-Cover abzurufen."""
+        """Ermittelt Releases zur MBID und versucht, das Front-Cover abzurufen.
+
+        Transiente MB-HTTP-Fehler werden intern retried (_rate_limited_json);
+        bleibt ein Fehler bestehen, wird ``None`` zurückgegeben statt zu crashen.
+        """
         if not recording_id:
             return None
-        releases = await self._fetch_recording_releases(recording_id)
+        try:
+            releases = await self._fetch_recording_releases(recording_id)
+        except Exception:
+            return None
         if releases is None:
             return None
         for rel in releases[: self._MAX_RELEASES_TO_TRY]:
@@ -77,10 +84,16 @@ class CoverArtArchiveProvider(CoverArtProvider):
 
         Liefert Recording-Titel, -Künstler, ISRCs, Genres sowie
         Release-Informationen (Label, Katalog-Nr., Datum, Land, Barcode).
+
+        Transiente MB-HTTP-Fehler werden intern retried (_rate_limited_json);
+        bleibt ein Fehler bestehen, wird ``None`` zurückgegeben statt zu crashen.
         """
         if not recording_id:
             return None
-        releases = await self._fetch_recording_releases(recording_id)
+        try:
+            releases = await self._fetch_recording_releases(recording_id)
+        except Exception:
+            return None
         if releases is None:
             return None
 
@@ -180,16 +193,19 @@ class CoverArtArchiveProvider(CoverArtProvider):
         Das gesamte Rate-Limit (prüfen → sleep → timestamp setzen → request) läuft
         unter einem Lock, damit parallele Tasks nicht gleichzeitig durchschlüpfen
         und MB mit 429 antwortet (sonst gehen Covers im Batch verloren).
+
+        Wichtig: HTTP-Fehler werden NICHT verschluckt — der :func:`retry_async`
+        Decorator muss die Exception sehen, um bei transienten MB-Fehlern
+        (429/503/Timeout) tatsächlich zu retryen. Nur so gehen Covers unter Last
+        nicht verloren. Aufrufer (z.B. ``_fetch_cover_data``) fangen den Fehler
+        nach dem letzten Versuch ab und geben ``None`` zurück.
         """
         async with self._mb_lock:
             since_last = time.monotonic() - self._last_mb_request
             if since_last < 1.0:
                 await asyncio.sleep(1.0 - since_last)
             self._last_mb_request = time.monotonic()
-            try:
-                return await self._client.get_json(url, params=params, timeout=self._timeout)
-            except Exception:
-                return None
+            return await self._client.get_json(url, params=params, timeout=self._timeout)
 
     async def _fetch_recording_releases(
         self,

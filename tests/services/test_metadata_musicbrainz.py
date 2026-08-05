@@ -8,6 +8,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import pytest
 import respx
 
@@ -126,3 +127,25 @@ class TestCoverArtArchiveProvider:
         # Zwischen aufeinanderfolgenden MB-Requests muss mindestens ~1s liegen.
         for a, b in itertools.pairwise(times):
             assert b - a >= 0.9, f"Rate-Limit verletzt: {b - a:.2f}s zwischen Requests"
+
+    async def test_retries_on_transient_mb_error(self):
+        """retry_async greift bei transienten MB-HTTP-Fehlern — Cover geht nicht verloren.
+
+        Regression: _rate_limited_json verschluckte die Exception (return None),
+        sodass der Decorator nie retryte und ein 503 das Cover kostete.
+        """
+        client = _CountingClient()
+        client._calls = 0
+        provider = CoverArtArchiveProvider(client, timeout=5.0)
+
+        async def _flaky_get_json(*args: Any, **kwargs: Any) -> Any:
+            client._calls += 1
+            if client._calls == 1:
+                raise httpx.HTTPStatusError("503", request=httpx.Request("GET", "x"), response=httpx.Response(503))
+            return {"releases": [{"id": "rel-1"}]}
+
+        client.get_json = _flaky_get_json
+        payload = await provider._rate_limited_json("https://musicbrainz.org/ws/2/recording/rec-1")
+        assert payload == {"releases": [{"id": "rel-1"}]}
+        assert client._calls == 2, "Retry muss beim 2. Versuch greifen"
+        await client.aclose()
