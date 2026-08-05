@@ -36,6 +36,10 @@
   //
   // Maximale Anzahl gleichzeitig verarbeiteter Dateien (1–20).
   "max_concurrent": 3,
+  //
+  // Parallelität für das Durchsuchen der Bestandsdateien beim Enrich
+  // (Kandidaten-Scan). Nur lokales Tag-Lesen, keine API-Calls — stabil hoch.
+  "scan_concurrency": 20,
 
   // ── Logging ────────────────────────────────────────────────────────────────
   //

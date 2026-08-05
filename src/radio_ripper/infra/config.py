@@ -27,6 +27,10 @@ class Settings(BaseModel):
     acoustid_min_score: float = Field(default=0.85, ge=0.0, le=1.0)
     min_popularity_rank: int = Field(default=100000, ge=0)
     max_concurrent: int = Field(default=3, ge=1)
+    # Parallelität für das Durchsuchen der Bestandsdateien beim Enrich
+    # (Kandidaten-Scan). Unabhängig von max_concurrent, da es nur Tags liest
+    # und keine API-Calls macht — ein stabiler, schneller Wert ist hier sicher.
+    scan_concurrency: int = Field(default=20, ge=1)
 
     # ── Collection-Management ───────────────────────────────────────────────
     reconcile_on_startup: bool = True

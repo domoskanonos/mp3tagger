@@ -368,16 +368,35 @@ class FileProcessor:
         if not destination.exists():
             return
 
-        candidates: list[Path] = []
-        for path in sorted(destination.rglob("*.mp3")):
-            try:
-                tags = await asyncio.to_thread(read_tags_from_file, path)
-            except Exception:
-                self._log.debug("[%s] Tags nicht lesbar, überspringe: %s", self._name, path)
-                continue
-            missing = not tags.get("album") or not tags.get("genre") or not tags.get("has_cover")
-            if missing:
-                candidates.append(path)
+        mp3_files = sorted(destination.rglob("*.mp3"))
+        if not mp3_files:
+            self._log.info("[%s] Keine Bestandsdateien gefunden.", self._name)
+            return
+
+        # Kandidaten-Scan: Tags aller Dateien parallel lesen (scan_concurrency),
+        # nicht sequenziell — sonst dauert es bei großen Sammlungen sehr lange,
+        # bis die eigentliche Verarbeitung startet.
+        self._log.info("[%s] Durchsuche %d Bestandsdateien nach fehlenden Tags ...", self._name, len(mp3_files))
+        scan_sem = asyncio.Semaphore(self._settings.scan_concurrency)
+        scan_done = 0
+        scan_pct = _log_progress(self._log, 0, len(mp3_files), self._name)
+
+        async def _scan_one(path: Path) -> bool:
+            nonlocal scan_done, scan_pct
+            async with scan_sem:
+                try:
+                    tags = await asyncio.to_thread(read_tags_from_file, path)
+                    missing = not tags.get("album") or not tags.get("genre") or not tags.get("has_cover")
+                except Exception:
+                    self._log.debug("[%s] Tags nicht lesbar, überspringe: %s", self._name, path)
+                    missing = False
+                finally:
+                    scan_done += 1
+                    scan_pct = _log_progress(self._log, scan_done, len(mp3_files), self._name, scan_pct)
+                return missing
+
+        scan_results = await asyncio.gather(*(_scan_one(p) for p in mp3_files), return_exceptions=True)
+        candidates = [p for p, is_missing in zip(mp3_files, scan_results, strict=True) if is_missing is True]
 
         if not candidates:
             self._log.info("[%s] Keine Bestandsdateien mit fehlenden Tags gefunden.", self._name)
