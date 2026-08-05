@@ -512,7 +512,12 @@ class FileProcessor:
                 return  # nicht umbenennbar
 
             meta = self._build_metadata_from_tags(tags)
-            await self._finalize_and_move(meta=meta, source_path=path, staged_path=path)
+            await self._finalize_and_move(
+                meta=meta,
+                source_path=path,
+                staged_path=path,
+                delete_source=False,
+            )
 
         await asyncio.gather(*(_normalize_one(p) for p in mp3_files), return_exceptions=True)
         self._log.info("[%s] Dateinamen-Prüfung abgeschlossen (%d Dateien).", self._name, len(mp3_files))
@@ -591,7 +596,14 @@ class FileProcessor:
             return
 
         # Konsistent benennen + verschieben (wie neue MP3s), leere Alt-Ordner löschen.
-        await self._finalize_and_move(meta=meta, source_path=path, staged_path=stage)
+        # delete_source=False: source_path ist die echte Bibliotheksdatei — bei
+        # Verwerfen (schlechtere Version / Kollision) darf sie NIE gelöscht werden.
+        await self._finalize_and_move(
+            meta=meta,
+            source_path=path,
+            staged_path=stage,
+            delete_source=False,
+        )
 
         # Vorher/Nachher-Vergleich der Tags — logge, was sich wirklich geändert hat.
         self._log_changed_tags(path, tags, self._name)
@@ -646,7 +658,9 @@ class FileProcessor:
         meta: CollectedMetadata,
         source_path: Path,
         staged_path: Path,
-    ) -> None:
+        old_paths: list[Path] | None = None,
+        delete_source: bool = True,
+    ) -> bool:
         """Benennt + verschiebt eine getaggte Datei konsistent zur AcoustID-Wahrheit.
 
         - Zielpfad via ``compute_file_path`` aus den korrigierten artist/title/album.
@@ -655,6 +669,20 @@ class FileProcessor:
           sonst bleibt die existierende Datei (die neue wird verworfen).
         - Ziel existiert, anderer Song (Kollision) → neue Datei verwerfen + Error-Log
           mit allen relevanten Infos. Kein Überschreiben der Bibliothek.
+
+        Args:
+            old_paths: Weitere Katalog-Kopien desselben Songs, die NACH erfolgreichem
+                Einsortieren gelöscht werden (Duplikat-Konsolidierung). Werden nur
+                bei Erfolg entfernt — nie wenn die neue Datei verworfen wird.
+            delete_source: Ob ``source_path`` gelöscht werden darf, wenn die neue
+                Datei VERWORFEN wird (schlechtere Version oder Kollision). Im
+                Enrich-Flow ist ``source_path`` die echte Bibliotheksdatei und darf
+                nie gelöscht werden → False. Beim Verschieben/Ersetzen wird
+                ``source_path`` immer entfernt (Duplikat-Vermeidung).
+
+        Returns:
+            True, wenn die Datei in die Bibliothek übernommen wurde (neu oder ersetzt),
+            False wenn sie verworfen wurde oder ein Fehler auftrat.
         """
         result = meta.result
         track = meta.track
@@ -672,7 +700,8 @@ class FileProcessor:
                 # Datei ist bereits korrekt benannt (z.B. normalize_filenames):
                 # kein Move nötig, nur Katalog aktualisieren.
                 await self._upsert_final(final_path, meta)
-                return
+                await self._delete_old_copies(old_paths)
+                return True
             # Gleicher Pfad, aber Staging-Kopie: getaggte Staging-Datei ersetzt
             # die Originaldatei (in-place), dann Katalog aktualisieren.
             try:
@@ -685,10 +714,11 @@ class FileProcessor:
                     exc,
                 )
                 safe_unlink(staged_path)
-                return
+                return False
             self._log.info("[%s] Bestandsdatei aktualisiert: %s", self._name, final_path)
             await self._upsert_final(final_path, meta)
-            return
+            await self._delete_old_copies(old_paths)
+            return True
 
         if not final_path.exists():
             # Ziel frei → verschieben (EXDEV-sicher), leere Alt-Ordner aufräumen.
@@ -703,11 +733,12 @@ class FileProcessor:
                     exc,
                 )
                 safe_unlink(staged_path)
-                return
+                return False
             self._log.info("[%s] Umbenannt: %s -> %s", self._name, source_path.name, final_path)
             safe_unlink(source_path, parents_root=self._settings.destination)
             await self._upsert_final(final_path, meta)
-            return
+            await self._delete_old_copies(old_paths)
+            return True
 
         # ── Ziel existiert bereits ──
         existing_tags = await asyncio.to_thread(read_tags_from_file, final_path)
@@ -740,9 +771,11 @@ class FileProcessor:
                 except OSError as exc:
                     self._log.error("[%s] Ersetzen fehlgeschlagen: %s", self._name, exc)
                     safe_unlink(staged_path)
-                    return
+                    return False
                 safe_unlink(source_path, parents_root=self._settings.destination)
                 await self._upsert_final(final_path, meta)
+                await self._delete_old_copies(old_paths)
+                return True
             else:
                 self._log.info(
                     "[%s] Bestehende Version gleich/besser — neue verworfen: %s",
@@ -750,8 +783,9 @@ class FileProcessor:
                     source_path.name,
                 )
                 safe_unlink(staged_path)
-                safe_unlink(source_path, parents_root=self._settings.destination)
-            return
+                if delete_source:
+                    safe_unlink(source_path, parents_root=self._settings.destination)
+                return False
 
         # Kollision: anderer Song am Ziel → neue Datei verwerfen + Error-Log.
         self._log.error(
@@ -767,7 +801,27 @@ class FileProcessor:
             source_path,
         )
         safe_unlink(staged_path)
-        safe_unlink(source_path, parents_root=self._settings.destination)
+        if delete_source:
+            safe_unlink(source_path, parents_root=self._settings.destination)
+        return False
+
+    async def _delete_old_copies(self, old_paths: list[Path] | None) -> None:
+        """Löscht weitere Katalog-Kopien desselben Songs (Duplikat-Konsolidierung).
+
+        Wird NUR nach erfolgreichem Einsortieren aufgerufen — nie, wenn die neue
+        Datei verworfen wurde. Entfernt Datei + Katalog-Eintrag.
+        """
+        if not old_paths:
+            return
+        for old in old_paths:
+            if old.exists():
+                self._log.info("[%s] [DELETE] alte Kopie gelöscht: %s", self._name, old)
+            safe_unlink(old, parents_root=self._settings.destination)
+            if self._catalog is not None:
+                try:
+                    await self._catalog.remove(str(old))
+                except Exception:
+                    self._log.debug("[%s] Katalog-Remove der alten Kopie fehlgeschlagen", self._name)
 
     async def _upsert_final(self, final_path: Path, meta: CollectedMetadata) -> None:
         """Schreibt die finalen Datei-Infos in den Katalog (falls vorhanden)."""
@@ -972,11 +1026,14 @@ class FileProcessor:
         track: TrackInfo,
         enriched: EnrichedInfo | None,
         work_path: Path,
-    ) -> tuple[str, Path | None, Path | None]:
+    ) -> tuple[str, Path | None, list[Path]]:
         """Berechnet Zielpfad + Katalog-basierten Versionsvergleich.
 
-        Returns (provenance, final_path, delete_old).
-        delete_old ist None wenn keine alte Datei ersetzt wird.
+        Returns (provenance, final_path, old_paths).
+        old_paths sind weitere Katalog-Kopien desselben Songs, die NACH erfolgreichem
+        Einsortieren gelöscht werden (siehe _delete_old_copies). Es wird hier bewusst
+        NICHTS gelöscht — sonst gehen Duplikat-Kopien verloren, wenn die neue Datei
+        später doch verworfen wird (unpopular / Tag-Write-Fehler).
 
         Der Zielpfad-Move + die Pfad-Duplikat-Erkennung (gleicher Zielpfad)
         übernimmt :meth:`_finalize_and_move` — hier wird nur die Katalog-Abfrage
@@ -992,7 +1049,7 @@ class FileProcessor:
             album=album,
         )
 
-        delete_old: Path | None = None
+        old_paths: list[Path] = []
 
         # ── Schritt 1: Katalog-basierter Versionsvergleich ──
         # Gleiche recording_id = definitiv derselbe Song (unabhängig von ISRC/Album).
@@ -1000,7 +1057,6 @@ class FileProcessor:
         # Ist die neue besser, werden ALLE vorhandenen Kopien gelöscht (keine Duplikate).
         if self._catalog is not None and result.recording_id:
             existing_versions = await self._catalog.find_by_recording_id(result.recording_id)
-            to_delete: list[Path] = []
             for ev in existing_versions:
                 if ev.file_path == str(final_path):
                     continue  # wird über Pfad-Fallback in _finalize_and_move behandelt
@@ -1029,9 +1085,9 @@ class FileProcessor:
                         ev.acoustid_score or 0.0,
                         result.score,
                     )
-                    return "", None, None
+                    return "", None, []
                 # Neue ist besser — diese Kopie für Löschung vormerken
-                to_delete.append(candidate)
+                old_paths.append(candidate)
                 self._log.info(
                     "[%s] Katalog-Treffer: ersetze %s (score=%.4f) durch bessere Version (%.4f)",
                     self._name,
@@ -1039,19 +1095,8 @@ class FileProcessor:
                     ev.acoustid_score or 0.0,
                     result.score,
                 )
-            # Erste zu löschende Datei als delete_old (wird nach Move gelöscht + DB bereinigt),
-            # alle weiteren sofort löschen — verhindert mehrere Kopien desselben Songs.
-            if to_delete:
-                delete_old = to_delete[0]
-                for extra in to_delete[1:]:
-                    self._log.info(
-                        "[DELETE] %s — Grund: weiteres Duplikat derselben recording_id",
-                        extra.name,
-                    )
-                    safe_unlink(extra, parents_root=self._settings.destination)
-                    await self._catalog.remove(str(extra))
 
-        return provenance, final_path, delete_old
+        return provenance, final_path, old_paths
 
     async def _collect_metadata(
         self,
@@ -1188,7 +1233,7 @@ class FileProcessor:
         deezer_data = meta.deezer_data
         deezer_attempted = meta.deezer_attempted
 
-        provenance, final_path, _delete_old = await self._compute_destination_and_score(
+        provenance, final_path, old_paths = await self._compute_destination_and_score(
             result,
             track,
             enriched,
@@ -1259,10 +1304,18 @@ class FileProcessor:
         # ── Phase 9: Atomarer Move zu destination + ggf. alte Datei löschen ──
         # _finalize_and_move behandelt: Ziel frei → verschieben; gleicher Song →
         # bessere Version gewinnt; Kollision (anderer Song) → verwerfen + Error-Log.
-        await self._finalize_and_move(meta=meta, source_path=work_path, staged_path=stage_path)
+        # Duplikat-Kopien (old_paths) werden erst NACH Erfolg gelöscht.
+        moved = await self._finalize_and_move(
+            meta=meta,
+            source_path=work_path,
+            staged_path=stage_path,
+            old_paths=old_paths,
+        )
 
-        # Eviction nach erfolgreichem Abschluss
-        if self._catalog is not None:
+        # Eviction NUR nach erfolgreichem Einsortieren — sonst würde bei verworfenen
+        # Dateien (Kollision/schlechtere Version) ein Track gelöscht, ohne dass die
+        # Sammlung gewachsen ist.
+        if moved and self._catalog is not None:
             await self._maybe_evict(
                 meta.deezer_data.rank if meta.deezer_data else None,
                 final_path=final_path,

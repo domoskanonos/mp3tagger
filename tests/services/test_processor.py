@@ -512,7 +512,7 @@ class TestComputeDestinationAndScore:
         proc = _make_processor(tmp_path)
         result_fp = FingerprintResult(artist="A", title="T", score=0.9, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        provenance, final_path, delete_old = await proc._compute_destination_and_score(
+        provenance, final_path, old_paths = await proc._compute_destination_and_score(
             result_fp,
             track,
             None,
@@ -521,7 +521,7 @@ class TestComputeDestinationAndScore:
         assert provenance == "tag/tag"
         assert final_path is not None
         assert final_path.parent == proc._settings.destination / "A"
-        assert delete_old is None
+        assert old_paths == []
 
 
 # ── _finalize_and_move ──
@@ -600,10 +600,120 @@ class TestFinalizeAndMove:
         src = tmp_path / "src.mp3"
         _write_mp3(src, size=512)
         meta = self._meta("Artist", "Title", "r1")
-        await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+        ok = await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
         # Kollision: existierende (andere recording_id) bleibt, neue wird verworfen
         assert existing.exists()
         assert not src.exists()
+        assert ok is False, "verworfene Datei darf nicht als Erfolg gemeldet werden"
+
+    async def test_collision_keeps_library_file_when_delete_source_false(self, tmp_path: Path):
+        """Bug 1: Enrich-Kollision darf die Bibliotheksdatei NIE löschen.
+
+        source_path ist hier die echte Datei in destination/ (Enrich-Flow),
+        staged_path die getaggte Staging-Kopie. Bei Kollision wird nur die
+        Staging-Kopie verworfen — das Original bleibt unangetastet.
+        """
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        existing = dest / "Artist - Title.mp3"
+        _write_mp3(existing, size=512)
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        a = ID3()
+        a.add(TPE1(encoding=3, text="Artist"))
+        a.add(TIT2(encoding=3, text="Title"))
+        a.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="other-rec"))
+        a.save(existing, v2_version=3)
+
+        original = proc._settings.destination / "Old" / "Original.mp3"
+        original.parent.mkdir(parents=True)
+        _write_mp3(original, size=512)
+
+        stage_dir = tmp_path / "staging"
+        stage_dir.mkdir(parents=True)
+        stage = stage_dir / "Original.mp3"
+        _write_mp3(stage, size=512)
+
+        meta = self._meta("Artist", "Title", "r1")
+        ok = await proc._finalize_and_move(
+            meta=meta,
+            source_path=original,
+            staged_path=stage,
+            delete_source=False,
+        )
+        assert ok is False
+        assert original.exists(), "Bibliotheksdatei wurde fälschlich gelöscht"
+        assert existing.exists()
+        assert not stage.exists(), "Staging-Kopie wird verworfen"
+
+    async def test_old_copies_deleted_after_successful_move(self, tmp_path: Path):
+        """Bug 2: Duplikat-Kopien werden erst nach erfolgreichem Move gelöscht."""
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination
+        src = dest / "Old" / "src.mp3"
+        src.parent.mkdir(parents=True)
+        _write_mp3(src, size=512)
+        old_a = dest / "A" / "a.mp3"
+        old_a.parent.mkdir(parents=True)
+        _write_mp3(old_a, size=512)
+        old_b = dest / "B" / "b.mp3"
+        old_b.parent.mkdir(parents=True)
+        _write_mp3(old_b, size=512)
+
+        meta = self._meta("Artist", "Title", "r1")
+        ok = await proc._finalize_and_move(
+            meta=meta,
+            source_path=src,
+            staged_path=src,
+            old_paths=[old_a, old_b],
+        )
+        target = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert ok is True
+        assert target.exists()
+        assert not old_a.exists(), "alte Kopie wurde nicht entfernt"
+        assert not old_b.exists(), "alte Kopie wurde nicht entfernt"
+
+    async def test_old_copies_kept_when_file_rejected(self, tmp_path: Path):
+        """Bug 2: Bei Kollision/Verwerfen werden Duplikat-Kopien NICHT gelöscht."""
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        existing = dest / "Artist - Title.mp3"
+        _write_mp3(existing, size=512)
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        a = ID3()
+        a.add(TPE1(encoding=3, text="Artist"))
+        a.add(TIT2(encoding=3, text="Title"))
+        a.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="other-rec"))
+        a.save(existing, v2_version=3)
+        src = tmp_path / "src.mp3"
+        _write_mp3(src, size=512)
+        old_copy = proc._settings.destination / "Other" / "copy.mp3"
+        old_copy.parent.mkdir(parents=True)
+        _write_mp3(old_copy, size=512)
+
+        meta = self._meta("Artist", "Title", "r1")
+        ok = await proc._finalize_and_move(
+            meta=meta,
+            source_path=src,
+            staged_path=src,
+            old_paths=[old_copy],
+        )
+        assert ok is False
+        assert old_copy.exists(), "Duplikat wurde trotz Verwerfen der neuen Datei gelöscht"
+
+    async def test_returns_true_when_moved(self, tmp_path: Path):
+        """Bug 3-Grundlage: erfolgreicher Move wird als Erfolg gemeldet (→ Eviction erlaubt)."""
+        proc = _make_processor(tmp_path)
+        dest = proc._settings.destination / "Old"
+        dest.mkdir(parents=True)
+        src = dest / "song.mp3"
+        _write_mp3(src, size=512)
+        meta = self._meta("Artist", "Title", "r1")
+        ok = await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
+        assert ok is True
 
 
 # ── _process_file (End-to-End Happy Path) ──

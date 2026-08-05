@@ -88,14 +88,17 @@ class TestCatalogVersionReplace:
         proc = _make_processor(tmp_path, catalog=catalog)
         result = FingerprintResult(artist="A", title="T", score=0.95, recording_id="r1")
         track = TrackInfo(stream_title="A - T", artist="A", title="T")
-        _, final_path, delete_old = await proc._compute_destination_and_score(
+        _, final_path, old_paths = await proc._compute_destination_and_score(
             result,
             track,
             None,
             tmp_path / "work.mp3",
         )
-        assert delete_old is not None and Path(delete_old) == old_path
+        # Alte Kopie wird NICHT sofort gelöscht — sie wird als old_path gemeldet,
+        # damit _finalize_and_move sie erst nach erfolgreichem Move entfernt.
+        assert old_paths == [old_path]
         assert final_path is not None
+        assert old_path.exists(), "Duplikat darf nicht vorzeitig gelöscht werden"
 
     async def test_catalog_skip_when_existing_better(self, tmp_path: Path, catalog: SqliteCatalog):
         # Alte Version unter anderem Pfad, höherer Score als neu
@@ -404,3 +407,54 @@ class TestCatalogUpsert:
         assert len(new_records) == 1
         assert new_records[0].album == "Great Album"
         assert new_records[0].genre == "Rock"
+
+
+class TestCriticalSectionEviction:
+    """Bug 3 — _maybe_evict darf nur bei erfolgreich einsortierter Datei laufen."""
+
+    async def test_no_eviction_when_file_rejected_by_collision(self, tmp_path: Path, catalog: SqliteCatalog):
+        """Kollision am Ziel → Datei verworfen → KEIN Eviction (Sammlung ist nicht gewachsen)."""
+        from radio_ripper.services.processor import CollectedMetadata
+
+        proc = _make_processor(tmp_path, catalog=catalog, min_popularity_rank=0)
+        proc._maybe_evict = AsyncMock()  # type: ignore[method-assign]
+        proc._write_tags = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        proc._cover_provider = None
+        proc._deezer_provider = None
+        proc._popularity = None
+
+        result = FingerprintResult(artist="Artist", title="Title", score=0.9, recording_id="r1")
+        track = TrackInfo(stream_title="Artist - Title", artist="Artist", title="Title")
+        meta = CollectedMetadata(
+            result=result,
+            track=track,
+            enriched=None,
+            mb_data=None,
+            deezer_data=None,
+            deezer_cover=None,
+            cover_from_caa=None,
+            cover_from_enrich=None,
+            deezer_attempted=False,
+            artist_image=None,
+            lyrics=None,
+        )
+        # Ziel belegt von einem ANDEREN Song → Kollision
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True)
+        existing = dest / "Artist - Title.mp3"
+        existing.write_bytes(b"\xff\xfb" + b"\x00" * 512)
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        a = ID3()
+        a.add(TPE1(encoding=3, text="Artist"))
+        a.add(TIT2(encoding=3, text="Title"))
+        a.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="other-rec"))
+        a.save(existing, v2_version=3)
+
+        work = tmp_path / "work" / "song.mp3"
+        work.parent.mkdir(parents=True)
+        work.write_bytes(b"\xff\xfb" + b"\x00" * 512)
+
+        await proc._process_critical_section(meta=meta, work_path=work)
+        proc._maybe_evict.assert_not_awaited()
+        assert existing.exists()
