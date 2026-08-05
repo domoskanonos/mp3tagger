@@ -470,6 +470,68 @@ class FileProcessor:
         await self._run_staggered(candidates.items(), _enrich_worker)
         self._log.info("[%s] Vervollständigung abgeschlossen (%d Dateien).", self._name, len(candidates))
 
+    async def normalize_filenames(self) -> None:
+        """Strikte Dateinamen-Normierung: Dateiname muss mit den artist/title-Tags
+        übereinstimmen (Tag = Wahrheit). Fehlbenannte Dateien werden umbenannt und
+        ggf. in den korrekten Album-Ordner verschoben.
+
+        Rein lokal (kein API-Call) → kein Stagger/Rate-Limit, möglichst schnell.
+        Nutzt die bestehende ``_finalize_and_move``-Logik (Duplikat-Handling via
+        is_better_version, leere Alt-Ordner-Bereinigung, Katalog-Upsert).
+        """
+        destination = self._settings.destination
+        if not destination.exists():
+            return
+        mp3_files = sorted(destination.rglob("*.mp3"))
+        if not mp3_files:
+            self._log.info("[%s] Keine Bestandsdateien gefunden.", self._name)
+            return
+
+        self._log.info("[%s] Prüfe Dateinamen von %d Bestandsdateien ...", self._name, len(mp3_files))
+        done = 0
+        last_pct = _log_progress(self._log, 0, len(mp3_files), self._name)
+
+        async def _normalize_one(path: Path) -> None:
+            nonlocal done, last_pct
+            try:
+                tags = await asyncio.to_thread(read_tags_from_file, path)
+            except Exception:
+                self._log.debug("[%s] Tags nicht lesbar, überspringe: %s", self._name, path.name)
+                return
+            finally:
+                done += 1
+                last_pct = _log_progress(self._log, done, len(mp3_files), self._name, last_pct)
+
+            artist = tags.get("artist") or ""
+            title = tags.get("title") or ""
+            if not artist or not title:
+                return  # nicht umbenennbar
+
+            result = self._build_result_from_tags(tags)
+            enriched = EnrichedInfo(album=tags.get("album") or None)
+            track = TrackInfo(
+                stream_title=f"{artist} - {title}",
+                artist=artist,
+                title=title,
+            )
+            meta = CollectedMetadata(
+                result=result,
+                track=track,
+                enriched=enriched,
+                mb_data=None,
+                deezer_data=None,
+                deezer_cover=None,
+                cover_from_caa=None,
+                cover_from_enrich=None,
+                deezer_attempted=False,
+                artist_image=None,
+                lyrics=None,
+            )
+            await self._finalize_and_move(meta=meta, source_path=path, staged_path=path)
+
+        await asyncio.gather(*(_normalize_one(p) for p in mp3_files), return_exceptions=True)
+        self._log.info("[%s] Dateinamen-Prüfung abgeschlossen (%d Dateien).", self._name, len(mp3_files))
+
     async def _enrich_existing_file(self, path: Path, *, pre_tags: dict[str, Any] | None = None) -> None:
         """Reichert eine Bestandsdatei an und schreibt fehlende Tags in-place.
 
@@ -591,8 +653,13 @@ class FileProcessor:
         )
 
         if final_path == source_path:
-            # Gleicher Pfad: getaggte Staging-Datei ersetzt die Originaldatei
-            # (in-place), dann Katalog aktualisieren.
+            if staged_path == final_path:
+                # Datei ist bereits korrekt benannt (z.B. normalize_filenames):
+                # kein Move nötig, nur Katalog aktualisieren.
+                await self._upsert_final(final_path, meta)
+                return
+            # Gleicher Pfad, aber Staging-Kopie: getaggte Staging-Datei ersetzt
+            # die Originaldatei (in-place), dann Katalog aktualisieren.
             try:
                 shutil.move(str(staged_path), str(final_path))
             except OSError as exc:
@@ -691,13 +758,25 @@ class FileProcessor:
         """Schreibt die finalen Datei-Infos in den Katalog (falls vorhanden)."""
         if self._catalog is None:
             return
+        has_cover = (meta.cover_from_caa or meta.deezer_cover or meta.cover_from_enrich) is not None
+        has_performer = meta.artist_image is not None
+        if not has_cover and not has_performer:
+            # Kein Cover/Performer im Meta (z.B. normalize_filenames) → aus den
+            # tatsächlichen Datei-Tags übernehmen, damit der Katalog korrekt bleibt.
+            try:
+                tags = await asyncio.to_thread(read_tags_from_file, final_path)
+                has_cover = bool(tags.get("has_cover"))
+                has_performer = bool(tags.get("has_performer"))
+            except Exception:
+                pass
         await self._catalog_upsert(
             final_path,
             meta.result,
             meta.mb_data,
             meta.enriched,
             meta.deezer_data,
-            has_cover=(meta.cover_from_caa or meta.deezer_cover or meta.cover_from_enrich) is not None,
+            has_cover=has_cover,
+            has_performer=has_performer,
         )
 
     def _log_changed_tags(self, path: Path, before: dict[str, Any], station_name: str) -> None:
@@ -1297,6 +1376,7 @@ class FileProcessor:
         deezer_data: DeezerData | None,
         *,
         has_cover: bool,
+        has_performer: bool = False,
     ) -> None:
         """Liest Audio-Eigenschaften nach dem Move und trägt das Lied im Katalog ein."""
         assert self._catalog is not None
@@ -1327,6 +1407,7 @@ class FileProcessor:
             acoustid_score=result.score,
             popularity_rank=deezer_data.rank if deezer_data else None,
             has_cover=has_cover,
+            has_performer=has_performer,
         )
         try:
             await self._catalog.upsert(rec)

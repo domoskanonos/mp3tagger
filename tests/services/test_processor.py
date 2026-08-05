@@ -773,6 +773,69 @@ class TestEnrichExistingFiles:
         assert apic.data == b"CAA-COVER-DATA"
 
 
+class TestNormalizeFilenames:
+    async def test_renames_file_with_wrong_name(self, tmp_path: Path):
+        """Datei mit falschem Namen wird zum Tag-Standard (Artist - Title) umbenannt."""
+        from mutagen.id3 import ID3, TIT2, TPE1
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        dest = proc._settings.destination / "FalscherName"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "FalscherName - FalscherTitel.mp3"
+        _write_mp3(f, size=512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.save(f, v2_version=3)
+
+        await proc.normalize_filenames()
+
+        target = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert target.exists(), f"expected {target}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        assert not f.exists()
+
+    async def test_renames_duplicate_suffix_file(self, tmp_path: Path):
+        """Datei mit .1-Suffix (gleiche recording_id) wird zum Standard umbenannt."""
+        from mutagen.id3 import ID3, TIT2, TPE1, TXXX
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "Artist - Title.1.mp3"
+        _write_mp3(f, size=512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.add(TXXX(encoding=3, desc="MusicBrainz Recording Id", text="rec-1"))
+        audio.save(f, v2_version=3)
+
+        await proc.normalize_filenames()
+
+        target = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert target.exists(), f"expected {target}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        assert not f.exists()
+
+    async def test_keeps_correct_name(self, tmp_path: Path):
+        """Korrekt benannte Datei bleibt unverändert."""
+        from mutagen.id3 import ID3, TIT2, TPE1
+
+        proc = _make_processor(tmp_path, min_popularity_rank=0)
+        dest = proc._settings.destination / "Artist"
+        dest.mkdir(parents=True, exist_ok=True)
+        f = dest / "Artist - Title.mp3"
+        _write_mp3(f, size=512)
+        audio = ID3()
+        audio.add(TPE1(encoding=3, text="Artist"))
+        audio.add(TIT2(encoding=3, text="Title"))
+        audio.save(f, v2_version=3)
+
+        await proc.normalize_filenames()
+
+        assert f.exists()
+        # keine zusätzlichen mp3
+        assert len(list(proc._settings.destination.rglob("*.mp3"))) == 1
+
+
 class TestProcessFileFailurePaths:
     async def test_fingerprint_failure_cleans_up(self, tmp_path: Path):
         proc = _make_processor(tmp_path)

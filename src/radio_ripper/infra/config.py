@@ -34,6 +34,10 @@ class Settings(BaseModel):
     # (gleicher Anreicherungs-Flow wie bei neuen MP3s). Nur Dateien mit fehlenden
     # Feldern werden verarbeitet.
     enrich_missing_tags_on_startup: bool = False
+    # Strikte Dateinamen-Normierung nach dem Enrich: Dateiname muss mit den
+    # artist/title-Tags übereinstimmen (Tag = Wahrheit). Fehlbenannte Dateien
+    # werden umbenannt/verschoben (inkl. Album-Ordner). Kein API-Call — rein lokal.
+    tag_filename_compare: bool = False
     max_collection_size: int = Field(
         default=0, ge=0, description="0=disabled. >0 aktiviert Größenlimit + Eviction-Logik"
     )
