@@ -1,6 +1,6 @@
 [project]
 name = "radio-ripper-tag"
-version = "3.2.0"
+version = "3.3.0"
 description = "Webradio-Tagger — AcoustID-Fingerprinting, iTunes-Enrichment, ID3v2-Tagging"
 readme = "README.md"
 requires-python = ">=3.11"
