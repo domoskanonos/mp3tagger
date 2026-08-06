@@ -458,3 +458,93 @@ class TestCriticalSectionEviction:
         await proc._process_critical_section(meta=meta, work_path=work)
         proc._maybe_evict.assert_not_awaited()
         assert existing.exists()
+
+
+class TestCatalogEarlyReject:
+    """Stufe A — Katalog-Reject direkt nach dem Fingerprint, ohne API-Calls."""
+
+    async def test_rejects_when_better_version_exists_without_api_calls(self, tmp_path: Path, catalog: SqliteCatalog):
+        """Bessere Version im Katalog → verworfen, MB/iTunes/Deezer/CAA werden nicht angefragt."""
+        existing_path = tmp_path / "out" / "Artist" / "Artist - Title.mp3"
+        existing_path.parent.mkdir(parents=True)
+        existing_path.write_bytes(b"\xff\xfb\x00\x00")
+        await catalog.upsert(
+            SongRecord(
+                file_path=str(existing_path),
+                recording_id="r1",
+                isrc="ISRC1",
+                artist="Artist",
+                title="Title",
+                acoustid_score=0.95,
+                bitrate=320,
+                sample_rate=44100,
+            )
+        )
+        proc = _make_processor(tmp_path, catalog=catalog, min_popularity_rank=0)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        mp3.write_bytes(b"\xff\xfb\x00\x00")
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.8,
+            recording_id="r1",
+        )
+        proc._metadata = AsyncMock()
+        proc._cover_provider = AsyncMock()
+        proc._deezer_provider = AsyncMock()
+
+        await proc._process_one(mp3)
+
+        assert not mp3.exists(), "Datei wurde nicht verworfen"
+        # Nur die bestehende (bessere) Referenz bleibt in destination
+        assert list(proc._settings.destination.rglob("*.mp3")) == [existing_path]
+        assert not list(proc._temp_dir.rglob("*.mp3"))
+        # KEINE Anreicherungs-Calls nach dem Katalog-Reject
+        proc._metadata.fetch.assert_not_called()
+        proc._cover_provider.fetch_recording_data.assert_not_called()
+        proc._deezer_provider.fetch.assert_not_called()
+
+    async def test_keeps_when_new_version_better(self, tmp_path: Path, catalog: SqliteCatalog):
+        """Neue Version ist besser (höherer Score) → überlebt Stufe A."""
+        # Alte (schlechtere) Kopie an ANDEREM Pfad (Album-Unterordner)
+        existing_path = tmp_path / "out" / "Artist" / "OldAlbum" / "Artist - Title.mp3"
+        existing_path.parent.mkdir(parents=True)
+        existing_path.write_bytes(b"\xff\xfb\x00\x00")
+        await catalog.upsert(
+            SongRecord(
+                file_path=str(existing_path),
+                recording_id="r1",
+                isrc="ISRC1",
+                artist="Artist",
+                title="Title",
+                acoustid_score=0.5,
+                bitrate=192,
+                sample_rate=44100,
+            )
+        )
+        proc = _make_processor(tmp_path, catalog=catalog, min_popularity_rank=0)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        mp3.write_bytes(b"\xff\xfb\x00\x00")
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="r1",
+        )
+        proc._metadata.fetch.return_value = None  # type: ignore[attr-defined]
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+
+        await proc._process_one(mp3)
+
+        # Überlebt → landet verarbeitet in destination
+        target = proc._settings.destination / "Artist" / "Artist - Title.mp3"
+        assert target.exists(), f"expected {target}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        # Alte (schlechtere) Kopie wurde nach dem Move gelöscht (Duplikat-Konsolidierung)
+        assert not existing_path.exists()

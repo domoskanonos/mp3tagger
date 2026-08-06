@@ -1,11 +1,13 @@
 """File processor — concurrent inbox processing for recorded MP3s.
 
 Scans an ``inbox`` (source) for ``.mp3`` files and processes up to
-``max_concurrent`` of them in parallel. Per file:
-fingerprint → [CAA+MB || iTunes+Lyrics+ArtImg || Deezer] (parallel) →
-MB-Korrektur → Score-Vergleich → Popularitäts-Prüfung → ONE tag write,
-all in a ``work_dir`` staging area, then atomically moved to ``destination/``.
-No database involved — files are either perfect (in destination/) or deleted.
+``max_concurrent`` of them in parallel. Per file, mit frühem Abbruch:
+fingerprint → Katalog-Reject (Stufe A, kein API-Call) → Popularitäts-Reject
+(Stufe B, 1 Deezer-Call) → [CAA+MB || iTunes+Lyrics+ArtImg || Deezer]
+(parallel) → MB-Korrektur → ONE tag write in a ``work_dir`` staging area,
+then atomically moved to ``destination/``. Dateien, die früh verworfen werden
+(Reject), geben ihren Slot sofort frei — kein Stagger. Der MusicBrainz-Lock
+hält das 1-Request-pro-Sekunde-Rate-Limit global ein.
 """
 
 from __future__ import annotations
@@ -293,7 +295,6 @@ class FileProcessor:
         self._popularity = popularity_provider
         self._lyrics_provider = lyrics_provider
         self._catalog = catalog
-        self._semaphore = asyncio.Semaphore(settings.max_concurrent)
         # Pro recording_id ein Lock — verhindert Race Condition bei gleichzeitiger
         # Verarbeitung desselben Songs durch mehrere Worker.
         self._recording_locks: dict[str, asyncio.Lock] = {}
@@ -345,44 +346,39 @@ class FileProcessor:
         if not mp3s:
             self._log.debug("No MP3s in %s — waiting for new files (inotify)", self._inbox)
             return
-        await self._run_staggered(((mp3, {}) for mp3 in mp3s), self._process_one_staggered)
+        await self._run_batch(mp3s, self._process_one)
 
-    async def _process_one_staggered(self, mp3: Path, _pre_tags: dict[str, Any] | None = None) -> None:
-        """Verarbeitet eine neue Inbox-Datei (unter dem max_concurrent-Puffer)."""
-        async with self._semaphore:
-            if self._stop_event.is_set():
-                return
-            try:
-                await self._process_one(mp3)
-            except Exception:
-                self._log.exception("Unexpected error processing %s", mp3)
-
-    async def _run_staggered(
+    async def _run_batch(
         self,
-        items: Iterable[tuple[Path, dict[str, Any]]],
-        worker: Callable[[Path, dict[str, Any]], Awaitable[None]],
+        items: Iterable[Path],
+        worker: Callable[[Path], Awaitable[None]],
     ) -> None:
-        """Startet Dateien im 1-Sekunden-Takt, max_concurrent als Puffer.
+        """Verarbeitet eine Dateiliste mit max_concurrent parallelen Slots (kein Stagger).
 
-        Einheitlich für Inbox (neue MP3s) und Enrich (Bestandsdateien): Eine neue
-        Datei wird pro Sekunde gestartet; `max_concurrent` begrenzt nur die Zahl
-        der gleichzeitig in Arbeit befindlichen Dateien (Puffer, nicht erzwungen).
-        Dadurch bleibt das MusicBrainz-Rate-Limit (1 req/s) sicher eingehalten,
-        da jede Datei höchstens einen MB-Call auslöst.
+        Einheitlich für Inbox (neue MP3s), Enrich (Bestandsdateien) und Normalize:
+        Dateien starten sofort; `max_concurrent` begrenzt die gleichzeitig in Arbeit
+        befindlichen Dateien. Ablehnungen (Fingerprint/Score/Popularität/Katalog) sind
+        kurz und geben ihren Slot sofort frei — kein künstliches 1s-Warten.
+
+        Das MusicBrainz-Rate-Limit (1 req/s) wird NICHT hier garantiert, sondern durch
+        den globalen MB-Lock in `_rate_limited_json` — der Batch kann also ohne Timing
+        laufen.
         """
         in_flight: set[asyncio.Task[None]] = set()
 
-        async def _run(item: tuple[Path, dict[str, Any]]) -> None:
-            path, pre_tags = item
-            await worker(path, pre_tags)
+        async def _run(path: Path) -> None:
+            if self._stop_event.is_set():
+                return
+            try:
+                await worker(path)
+            except Exception:
+                self._log.exception("Unexpected error processing %s", path)
 
-        for item in items:
+        for path in items:
             # Puffer voll? → warten, bis ein Slot frei ist
             while len(in_flight) >= self._settings.max_concurrent:
                 _done, in_flight = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
-            task = asyncio.create_task(_run(item))
-            in_flight.add(task)
-            await asyncio.sleep(1.0)  # 1 neue Datei pro Sekunde
+            in_flight.add(asyncio.create_task(_run(path)))
 
         if in_flight:
             await asyncio.gather(*in_flight, return_exceptions=True)
@@ -460,18 +456,17 @@ class FileProcessor:
         done = 0
         last_pct = _log_progress(self._log, 0, len(candidates), self._name)
 
-        async def _enrich_worker(path: Path, pre_tags: dict[str, Any]) -> None:
+        async def _enrich_worker(path: Path) -> None:
             nonlocal done, last_pct
-            async with self._semaphore:
-                try:
-                    await self._enrich_existing_file(path, pre_tags=pre_tags)
-                except Exception:
-                    self._log.exception("[%s] Fehler bei Bestandsdatei %s", self._name, path.name)
-                finally:
-                    done += 1
-                    last_pct = _log_progress(self._log, done, len(candidates), self._name, last_pct)
+            try:
+                await self._enrich_existing_file(path, pre_tags=candidates.get(path))
+            except Exception:
+                self._log.exception("[%s] Fehler bei Bestandsdatei %s", self._name, path.name)
+            finally:
+                done += 1
+                last_pct = _log_progress(self._log, done, len(candidates), self._name, last_pct)
 
-        await self._run_staggered(candidates.items(), _enrich_worker)
+        await self._run_batch(candidates.keys(), _enrich_worker)
         self._log.info("[%s] Vervollständigung abgeschlossen (%d Dateien).", self._name, len(candidates))
 
     async def normalize_filenames(self) -> None:
@@ -519,7 +514,7 @@ class FileProcessor:
                 delete_source=False,
             )
 
-        await asyncio.gather(*(_normalize_one(p) for p in mp3_files), return_exceptions=True)
+        await self._run_batch(mp3_files, _normalize_one)
         self._log.info("[%s] Dateinamen-Prüfung abgeschlossen (%d Dateien).", self._name, len(mp3_files))
 
     async def _enrich_existing_file(self, path: Path, *, pre_tags: dict[str, Any] | None = None) -> None:
@@ -1131,15 +1126,22 @@ class FileProcessor:
         result: FingerprintResult,
         track_pre: TrackInfo,
         work_path: Path,
+        *,
+        deezer_early: DeezerData | None = None,
+        deezer_attempted_early: bool = False,
     ) -> CollectedMetadata:
         """Phase 3+4: Parallele Anreicherung + MB-Korrektur (gemeinsam für neue & Bestandsdateien).
 
         CAA+MB || iTunes+Lyrics+ArtImg || Deezer laufen parallel, danach MB-Korrektur
         (MB-Daten kanonisch, iTunes als Fallback) inkl. Deezer-Re-Fetch.
+
+        ``deezer_early``/``deezer_attempted_early`` kommen aus Stufe B (früher
+        Popularitäts-Check im Inbox-Flow) — dann wird Deezer NICHT erneut gefetcht
+        (kein Doppel-Call). Enrich ruft ohne diese Parameter → normaler Deezer-Call.
         """
         # deezer_attempted unterscheidet "Deezer angerufen, kein Treffer" (→ löschen)
         # von "Deezer gar nicht versucht / Exception" (→ überspringen, API evtl. down)
-        deezer_attempted = False
+        deezer_attempted = deezer_attempted_early
 
         async def _phase1_caa_mb() -> tuple[bytes | None, MusicBrainzData | None]:
             if not self._cover_provider or not result.recording_id:
@@ -1156,6 +1158,10 @@ class FileProcessor:
 
         async def _phase_deezer() -> tuple[DeezerData | None, bytes | None]:
             nonlocal deezer_attempted
+            if deezer_attempted_early:
+                # Stufe B hat Deezer schon gefetcht → Ergebnis wiederverwenden.
+                deezer_attempted = True
+                return deezer_early, deezer_early.cover_bytes if deezer_early else None
             if not self._deezer_provider or not (result.artist or result.title):
                 return None, None
             try:
@@ -1223,6 +1229,80 @@ class FileProcessor:
             lyrics=lyrics,
         )
 
+    async def _catalog_early_reject(self, result: FingerprintResult, work_path: Path) -> bool:
+        """Stufe A: verwerfen, wenn schon eine gleiche/bessere Version desselben Songs existiert.
+
+        Läuft direkt nach dem Fingerprint (nur Katalog-Abfrage via recording_id,
+        KEIN API-Call). Spiegelbild von Schritt 1 in ``_compute_destination_and_score`` —
+        wird früh ausgeführt, um die teuren MB/iTunes/Deezer/LRCLib/Cover-Calls zu sparen.
+        """
+        if self._catalog is None or not result.recording_id:
+            return False
+        try:
+            existing = await self._catalog.find_by_recording_id(result.recording_id)
+        except Exception:
+            self._log.debug("[%s] Katalog-Abfrage fehlgeschlagen", self._name)
+            return False
+        for ev in existing:
+            if not is_better_version(
+                result.score,
+                None,
+                None,
+                ev.acoustid_score,
+                ev.bitrate,
+                ev.sample_rate,
+            ):
+                self._log.info(
+                    "[DELETE] %s — Grund: Katalog-Treffer mit gleicher/besserer Version (score=%.4f >= %.4f)",
+                    work_path.name,
+                    ev.acoustid_score or 0.0,
+                    result.score,
+                )
+                return True
+        return False
+
+    async def _popularity_fetch(self, result: FingerprintResult) -> tuple[DeezerData | None, bool]:
+        """Deezer-Call für den frühen Popularitäts-Check. Gibt (data, attempted) zurück."""
+        if not self._deezer_provider or not (result.artist or result.title):
+            return None, False
+        try:
+            data = await self._deezer_provider.fetch(result.artist, result.title)
+            return data, True
+        except Exception:
+            self._log.debug("[%s] Deezer fetch failed", self._name)
+            return None, False
+
+    async def _early_popularity_check(
+        self,
+        result: FingerprintResult,
+        work_path: Path,
+    ) -> tuple[DeezerData | None, bool, bool]:
+        """Stufe B: Deezer-Call + Popularitäts-Reject VOR den teuren Anreicherungs-Calls.
+
+        Returns (deezer_data, attempted, rejected). ``rejected=True`` = Datei verwerfen
+        (unpopular oder nicht auf Deezer). Netzwerkfehler → nicht verwerfen.
+        """
+        if self._settings.min_popularity_rank <= 0:
+            return None, False, False
+        deezer_data, attempted = await self._popularity_fetch(result)
+        if attempted and deezer_data is None:
+            self._log.warning("[%s] Deleted unknown track (not on Deezer): %s", self._name, work_path.name)
+            return None, attempted, True
+        if deezer_data is not None:
+            rank = deezer_data.rank
+            if rank is None:
+                self._log.debug("[%s] Deezer treffer ohne rank? Behalte: %s", self._name, work_path.name)
+            elif rank < self._settings.min_popularity_rank:
+                self._log.warning(
+                    "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
+                    self._name,
+                    rank,
+                    self._settings.min_popularity_rank,
+                    work_path.name,
+                )
+                return deezer_data, attempted, True
+        return deezer_data, attempted, False
+
     async def _process_file(self, proc_path: Path) -> None:
         work_path = await self._move_to_work_dir(proc_path)
         if work_path is None:
@@ -1232,13 +1312,33 @@ class FileProcessor:
         if result is None:
             return
 
+        # ── Stufe A: Katalog-Reject (billig, kein API-Call) ──
+        # Wiederholungen desselben Songs (gleiche recording_id, nicht besser) werden
+        # sofort verworfen — MB/iTunes/Deezer/LRCLib/Cover werden gar nicht erst aufgerufen.
+        if await self._catalog_early_reject(result, work_path):
+            self._cleanup_file(work_path)
+            return
+
+        # ── Stufe B: Popularitäts-Reject (nur 1 Deezer-Call) ──
+        # Unpopular/unbekannte Dateien verwerfen, BEVOR MB/iTunes/LRCLib/CAA laufen.
+        deezer_early, deezer_attempted, rejected = await self._early_popularity_check(result, work_path)
+        if rejected:
+            self._cleanup_file(work_path)
+            return
+
         # ── Phase 3+4: Parallele Anreicherung + MB-Korrektur ──
         track_pre = TrackInfo(
             stream_title=f"{result.artist} - {result.title}",
             artist=result.artist,
             title=result.title,
         )
-        meta = await self._collect_metadata(result, track_pre, work_path)
+        meta = await self._collect_metadata(
+            result,
+            track_pre,
+            work_path,
+            deezer_early=deezer_early,
+            deezer_attempted_early=deezer_attempted,
+        )
 
         # ── Phase 5-10: unter recording_id-Lock -- verhindert Race Condition ──
         # Zwei Worker die denselben Song gleichzeitig verarbeiten würden sonst beide

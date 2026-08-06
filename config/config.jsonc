@@ -36,7 +36,7 @@
   //
   // Puffer-Obergrenze für gleichzeitig verarbeitete Dateien (nicht erzwungen —
   // neue Dateien werden mit 1s Abstand gestartet, bis dieser Wert erreicht ist).
-  "max_concurrent": 10,
+  "max_concurrent": 4,
 
   // ── Logging ────────────────────────────────────────────────────────────────
   //

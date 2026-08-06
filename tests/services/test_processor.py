@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -327,9 +328,8 @@ class TestDrainInbox:
         await proc._drain_inbox()
         assert call_count == 3
 
-    async def test_drain_staggers_one_per_second(self, tmp_path: Path):
-        """Neue Inbox-Dateien starten im 1-Sekunden-Takt (max_concurrent als Puffer)."""
-        import itertools
+    async def test_drain_batch_parallel(self, tmp_path: Path):
+        """Neue Inbox-Dateien starten sofort parallel (kein 1s-Stagger)."""
         import time
 
         proc = _make_processor(tmp_path)
@@ -339,15 +339,37 @@ class TestDrainInbox:
         timestamps: list[float] = []
 
         async def _mock_process(mp3_path: Path) -> None:
+            await asyncio.sleep(0.05)
             timestamps.append(time.monotonic())
 
         proc._process_one = _mock_process  # type: ignore[method-assign]
         await proc._drain_inbox()
         assert len(timestamps) == 3
-        # Zwischen den Start-Zeitpunkten muss ~1s liegen (Stagger).
+        # Alle laufen parallel (Stagger weg) → Gesamt-Spread deutlich unter 1s.
+        spread = max(timestamps) - min(timestamps)
+        assert spread < 0.9, f"Dateien sollten parallel laufen, spread={spread:.2f}s"
 
-        for a, b in itertools.pairwise(timestamps):
-            assert b - a >= 0.9, f"Stagger verletzt: {b - a:.2f}s zwischen Starts"
+    async def test_drain_respects_max_concurrent(self, tmp_path: Path):
+        """max_concurrent begrenzt die gleichzeitig laufenden Dateien."""
+        proc = _make_processor(tmp_path)
+        proc._settings = proc._settings.model_copy(update={"max_concurrent": 2})
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        for name in ("a.mp3", "b.mp3", "c.mp3", "d.mp3"):
+            (proc._inbox / name).write_bytes(b"\xff\xfb\x00\x00")
+
+        active = 0
+        peak = 0
+
+        async def _mock_process(mp3_path: Path) -> None:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.1)
+            active -= 1
+
+        proc._process_one = _mock_process  # type: ignore[method-assign]
+        await proc._drain_inbox()
+        assert peak <= 2, f"max_concurrent=2 verletzt: peak={peak}"
 
     async def test_stop_event_aborts_drain(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
@@ -1238,3 +1260,97 @@ class TestProcessFileFailurePaths:
         expected = proc._settings.destination / "Artist" / "Artist - Title.mp3"
         assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
         assert not list(proc._temp_dir.rglob("*.mp3"))
+
+
+class TestEarlyPopularityReject:
+    """Stufe B — Popularitäts-Reject VOR den teuren Anreicherungs-Calls."""
+
+    async def test_unpopular_rejected_before_expensive_calls(self, tmp_path: Path):
+        """rank < min → Datei verworfen, OHNE MB/iTunes/LRCLib/CAA-Calls."""
+        proc = _make_processor(tmp_path, min_popularity_rank=100)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
+        )
+        proc._metadata = AsyncMock()
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+        deezer = AsyncMock()
+        deezer.fetch.return_value = DeezerData(rank=50)  # < min
+        proc._deezer_provider = deezer
+
+        await proc._process_one(mp3)
+
+        # Datei verworfen
+        assert not mp3.exists()
+        assert not list(proc._temp_dir.rglob("*.mp3"))
+        assert not list(proc._settings.destination.rglob("*.mp3"))
+        # Stufe B macht nur den einen Deezer-Call — MB/iTunes/CAA wurden NICHT angefragt
+        deezer.fetch.assert_awaited_once()
+        proc._metadata.fetch.assert_not_called()
+        proc._cover_provider.fetch_recording_data.assert_not_called()
+        proc._cover_provider.fetch_cover_by_recording_id.assert_not_called()
+
+    async def test_unknown_track_rejected_before_expensive_calls(self, tmp_path: Path):
+        """Deezer: 0 Treffer → 'nicht auf Deezer' → verworfen ohne MB/iTunes/CAA."""
+        proc = _make_processor(tmp_path, min_popularity_rank=100)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
+        )
+        proc._metadata = AsyncMock()
+        proc._cover_provider = AsyncMock()
+        deezer = AsyncMock()
+        deezer.fetch.return_value = None  # 0 Deezer-Treffer
+        proc._deezer_provider = deezer
+
+        await proc._process_one(mp3)
+
+        assert not mp3.exists()
+        assert not list(proc._settings.destination.rglob("*.mp3"))
+        proc._metadata.fetch.assert_not_called()
+        proc._cover_provider.fetch_recording_data.assert_not_called()
+
+    async def test_popular_reaches_full_pipeline(self, tmp_path: Path):
+        """rank >= min → Datei überlebt Stufe B, der Deezer-Call wird NICHT doppelt gemacht."""
+        proc = _make_processor(tmp_path, min_popularity_rank=100)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+            artist="Artist",
+            title="Title",
+            score=0.95,
+            recording_id="rec-1",
+        )
+        proc._metadata.fetch.return_value = EnrichedInfo(  # type: ignore[attr-defined]
+            artist="Artist", title="Title", album="Album", genre="Rock"
+        )
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
+        deezer = AsyncMock()
+        deezer.fetch.return_value = DeezerData(rank=1000, isrc="ISRC1")
+        proc._deezer_provider = deezer
+
+        await proc._process_one(mp3)
+
+        expected = proc._settings.destination / "Artist" / "Album" / "Artist - Title.mp3"
+        assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
+        # Stufe B + _collect_metadata: Deezer-Call genau EINMAL (kein Doppel-Fetch)
+        deezer.fetch.assert_awaited_once()
