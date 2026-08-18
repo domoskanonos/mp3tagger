@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from radio_ripper.cli import main
+from radio_ripper.cli import _requeue_failed_files, main
 
 
 class TestCli:
@@ -38,3 +38,41 @@ class TestCli:
         with pytest.raises(SystemExit) as exc:
             main(["--version"])
         assert exc.value.code == 0
+
+
+class TestRequeueFailedFiles:
+    def test_moves_mp3s_back_to_inbox(self, tmp_path: Path):
+        failed = tmp_path / "failed"
+        failed.mkdir()
+        (failed / "song.mp3").write_bytes(b"data")
+        (failed / "other.mp3").write_bytes(b"data")
+        inbox = tmp_path / "inbox"
+
+        count = _requeue_failed_files(failed, inbox, _NullLogger())
+
+        assert count == 2
+        assert (inbox / "song.mp3").exists()
+        assert (inbox / "other.mp3").exists()
+        assert not (failed / "song.mp3").exists()
+
+    def test_skips_when_target_exists(self, tmp_path: Path):
+        failed = tmp_path / "failed"
+        failed.mkdir()
+        (failed / "song.mp3").write_bytes(b"data")
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        (inbox / "song.mp3").write_bytes(b"other")
+
+        count = _requeue_failed_files(failed, inbox, _NullLogger())
+
+        assert count == 0
+        assert (failed / "song.mp3").exists()  # bleibt liegen, kein Überschreiben
+
+    def test_missing_failed_dir_is_noop(self, tmp_path: Path):
+        count = _requeue_failed_files(tmp_path / "nope", tmp_path / "inbox", _NullLogger())
+        assert count == 0
+
+
+class _NullLogger:
+    def warning(self, *args, **kwargs):
+        pass

@@ -461,19 +461,22 @@ class TestFingerprintAndValidate:
         # Datei sollte nach temp_dir verschoben worden sein
         assert not work_path.exists()
 
-    async def test_no_recording_id_deletes_file(self, tmp_path: Path):
+    async def test_empty_recording_id_is_accepted(self, tmp_path: Path):
+        """Eine leere recording_id (z.B. usermeta-Treffer ohne MBID) ist KEIN
+        Grund zum Löschen — artist/title + Score reichen aus."""
         proc = _make_processor(tmp_path)
         work_path = tmp_path / "song.mp3"
         _write_mp3(work_path)
-        proc._fingerprint.fingerprint.return_value = FingerprintResult(  # type: ignore[attr-defined]
+        expected = FingerprintResult(
             artist="A",
             title="T",
             score=0.95,
             recording_id="",
         )
+        proc._fingerprint.fingerprint.return_value = expected  # type: ignore[attr-defined]
         result = await proc._fingerprint_and_validate(work_path)
-        assert result is None
-        assert not work_path.exists()
+        assert result == expected
+        assert work_path.exists()
 
     async def test_score_too_low_deletes_file(self, tmp_path: Path):
         proc = _make_processor(tmp_path, acoustid_min_score=0.99)

@@ -979,7 +979,7 @@ class FileProcessor:
             self._move_to_temp(work_path)
             return None
 
-        if result is None or not result.recording_id:
+        if result is None:
             self._log.info("[DELETE] %s — Grund: kein AcoustID-Treffer", work_path.name)
             self._cleanup_file(work_path)
             return None
@@ -1344,7 +1344,10 @@ class FileProcessor:
         # Zwei Worker die denselben Song gleichzeitig verarbeiten würden sonst beide
         # "kein Duplikat" lesen und beide schreiben. Der Lock serialisiert die
         # kritische Sequenz: Duplikat-Prüfung → Move → DB-Upsert.
-        recording_lock = self._recording_locks.setdefault(meta.result.recording_id, asyncio.Lock())
+        # Ohne recording_id (z.B. usermeta-Treffer ohne MBID) pro Dateipfad locken,
+        # sonst würden alle ID-losen Dateien denselben Lock teilen.
+        lock_key = meta.result.recording_id or str(work_path)
+        recording_lock = self._recording_locks.setdefault(lock_key, asyncio.Lock())
         async with recording_lock:
             await self._process_critical_section(meta=meta, work_path=work_path)
 

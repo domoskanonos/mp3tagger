@@ -49,6 +49,34 @@ def _find_config(cfg_arg: str | None) -> Path | None:
     return None
 
 
+def _requeue_failed_files(failed_dir: Path, inbox: Path, logger: logging.Logger) -> int:
+    """Verschiebt Dateien aus ``failed/`` zurück ins Inbox (Startup-Retry).
+
+    Dateien, die beim letzten Lauf an einem transienten Fehler gescheitert sind
+    (FingerprintError, API-Throttle, Tag-Write-Fehler), wurden nach ``failed/``
+    verschoben. Beim nächsten Start werden sie zurück ins Inbox gelegt, damit
+    sie erneut verarbeitet werden — statt für immer liegen zu bleiben.
+
+    Returns:
+        Anzahl der requeued Dateien.
+    """
+    if not failed_dir.is_dir():
+        return 0
+    requeued = 0
+    for failed_mp3 in sorted(failed_dir.glob("*.mp3")):
+        try:
+            inbox.mkdir(parents=True, exist_ok=True)
+            target = inbox / failed_mp3.name
+            if not target.exists():
+                failed_mp3.rename(target)
+                requeued += 1
+            else:
+                logger.warning("[Startup] Requeue %s übersprungen (Ziel existiert)", failed_mp3.name)
+        except OSError as exc:
+            logger.warning("[Startup] Requeue %s fehlgeschlagen: %s", failed_mp3.name, exc)
+    return requeued
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="radio-ripper-tag")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -180,6 +208,13 @@ async def _run_pipeline(settings: Settings, logger: logging.Logger, cfg_path: Pa
     if settings.tag_filename_compare:
         logger.info("[Startup] Vergleiche Dateinamen mit Tags ...")
         await proc.normalize_filenames()
+
+    # Dateien mit transienten Fehlern (z.B. FingerprintError, tag-write-Fehler)
+    # wurden nach failed/ verschoben. Beim Start zurück ins Inbox legen, damit
+    # sie erneut verarbeitet werden — sonst bleiben sie für immer liegen.
+    requeued = _requeue_failed_files(settings.work_dir / "failed", inbox, logger)
+    if requeued:
+        logger.info("[Startup] %d Datei(en) aus failed/ zurück ins Inbox gelegt.", requeued)
 
     def _signal_handler(signum: int, _frame: object | None) -> None:
         logger.info("Signal %s received - shutting down...", signum)

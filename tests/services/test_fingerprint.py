@@ -174,23 +174,21 @@ class TestAcoustidFingerprintProvider:
         assert result is not None
         assert result.recording_id == "many"
 
-    async def test_no_candidate_in_tolerance_returns_none(self) -> None:
-        """Kein Kandidat innerhalb der Dauer-Toleranz → kein Match.
-
-        Der Filter ist einseitig: Das Recording darf die Datei nicht deutlich
-        übersteigen (Kandidat kann die Datei gar nicht enthalten). Kürzere
-        Recordings sind ok (Radio-Rip mit Jingle/Moderation ist länger als das
-        Original).
-        """
+    async def test_longer_recording_still_matches_truncated_rip(self) -> None:
+        """Gekürzte/truncated Radio-Rips sind KÜRZER als das DB-Recording. Die
+        Dauer ist nur Sortier-Präferenz, kein Ausschlusskriterium — sonst würde
+        z.B. "Save The Best For Last" (219s Datei, 239s Recording, Score 0.90)
+        fälschlich gelöscht."""
         provider = AcoustidFingerprintProvider("test-key", min_score=0.0)
-        # Reale Dauer ~200s, Kandidat ist 30s LÄNGER als die Datei (> Toleranz 10s)
+        # Reale Dauer ~200s, Kandidat ist 30s LÄNGER als die Datei — trotzdem gültig.
         fake = _payload([_recording(title="Too Long", duration=230.0, sources=10)])
         with (
             _patch_lookup(fake),
             patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=200.0),
         ):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
-        assert result is None
+        assert result is not None
+        assert result.recording_id == "rec123"
 
     async def test_shorter_recording_still_matches_radio_rip(self) -> None:
         """Radio-Rips sind länger als das Original: Ein kürzeres Recording
@@ -312,3 +310,70 @@ class TestAcoustidFingerprintProvider:
         assert result is not None
         assert result.artist == "The Weeknd"
         assert result.recording_id == "rec-str"
+
+    async def test_accepts_candidate_without_recording_id(self) -> None:
+        """usermeta-Treffer ohne MBID (leere recording_id) dürfen NICHT verworfen
+        werden — artist/title + Score reichen aus."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.85)
+        fake = _payload(
+            [{"id": None, "title": "Blinding Lights (Lyrics)", "artists": ["The Weeknd"]}],
+            score=0.86,
+        )
+        with _patch_lookup(fake):
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert result is not None
+        assert result.recording_id == ""
+        assert result.title == "Blinding Lights (Lyrics)"
+        assert result.artist == "The Weeknd"
+
+    async def test_api_error_raises_fingerprint_error_not_no_match(self) -> None:
+        """Ein API-Fehler (status='error', z.B. 429/500) muss als FingerprintError
+        hochgereicht werden — NICHT als 'kein Treffer' (None), sonst löscht der
+        Caller die Datei. Nach den Retries wird der Fehler propagiert."""
+        from radio_ripper.services.fingerprint import FingerprintError
+
+        provider = AcoustidFingerprintProvider("test-key")
+        error_payload = {"status": "error", "error": {"code": 9, "message": "Too many requests"}}
+        with (
+            patch("acoustid.fingerprint_file", return_value=(200.0, b"fp")),
+            patch("acoustid.lookup", return_value=error_payload) as lookup_mock,
+            patch("radio_ripper.services.fingerprint.asyncio.sleep") as sleep_mock,
+            pytest.raises(FingerprintError, match="AcoustID API error"),
+        ):
+            await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert lookup_mock.call_count == 3
+        assert sleep_mock.call_count == 2  # nach den ersten beiden Fehlversuchen
+
+    async def test_throttle_waits_10s_then_recovers(self) -> None:
+        """Erst Throttle (status='error'), dann Erfolg: Es muss 10s gewartet und
+        erneut versucht werden, und der Treffer wird zurückgegeben."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.5)
+        error_payload = {"status": "error", "error": {"code": 9, "message": "Too many requests"}}
+        fake = _payload([_recording(title="Blinding Lights", artist="The Weeknd")])
+        with (
+            patch("acoustid.fingerprint_file", return_value=(200.0, b"fp")),
+            patch("acoustid.lookup", side_effect=[error_payload, fake]) as lookup_mock,
+            patch("radio_ripper.services.fingerprint.asyncio.sleep") as sleep_mock,
+        ):
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert result is not None
+        assert result.title == "Blinding Lights"
+        assert lookup_mock.call_count == 2
+        sleep_mock.assert_awaited_once_with(10.0)
+
+    async def test_permanent_api_error_fails_fast(self) -> None:
+        """Ein permanenter API-Fehler (z.B. invalid API key, code 4) muss SOFORT
+        als FingerprintError propagiert werden — kein 10s-Warten/Retry."""
+        from radio_ripper.services.fingerprint import FingerprintError
+
+        provider = AcoustidFingerprintProvider("test-key")
+        error_payload = {"status": "error", "error": {"code": 4, "message": "invalid API key"}}
+        with (
+            patch("acoustid.fingerprint_file", return_value=(200.0, b"fp")),
+            patch("acoustid.lookup", return_value=error_payload) as lookup_mock,
+            patch("radio_ripper.services.fingerprint.asyncio.sleep") as sleep_mock,
+            pytest.raises(FingerprintError, match="code=4"),
+        ):
+            await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert lookup_mock.call_count == 1
+        sleep_mock.assert_not_awaited()
