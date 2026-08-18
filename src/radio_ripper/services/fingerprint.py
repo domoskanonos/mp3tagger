@@ -25,8 +25,25 @@ from radio_ripper.domain.models import FingerprintResult
 _log = logging.getLogger(__name__)
 
 # Toleranz (Sekunden) für den Duration-Abgleich zwischen Audio-Datei und
-# AcoustID-Kandidat. Kandidaten außerhalb dieser Toleranz werden verworfen.
+# AcoustID-Kandidat. Radio-Rips sind fast immer LÄNGER als das Original
+# (Jingle/Moderation/Talkover am Anfang/Ende) — eine kürzere Recording-Dauer
+# ist daher kein Ausschlusskriterium. Nur wenn das Recording deutlich länger
+# ist als die Datei (Kandidat kann die Datei gar nicht enthalten), wird der
+# Kandidat verworfen.
 _DURATION_TOLERANCE_S = 10.0
+
+# Der AcoustID-Server filtert Kandidaten hart anhand des `duration`-Parameters:
+# Der Match-Algorithmus sucht nur in einem schmalen Dauer-Band um das Recording,
+# und Radio-Rips sind fast immer LÄNGER als das Original (Jingle, Moderation,
+# Talkover am Anfang/Ende). Deshalb wird zusätzlich zur vollen Dateilänge eine
+# absteigende Reihe von `duration`-Werten probiert (siehe ``_candidate_durations``).
+# Der erste Dauerwert, dessen bester Kandidat akzeptabel ist (Score >= min),
+# gewinnt; ein reiner „irgendein Treffer“ mit zu niedrigem Score stoppt die Suche
+# NICHT, weil ein anderer Dauerwert oft deutlich besser matcht.
+_DURATION_RETRY_STEPS_S = (2, 4, 6, 8, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100, 120)
+# Untergrenze für probierte Dauerwerte — kürzere Werte sind für reale Songs
+# unsinnig und sparen nur API-Calls.
+_DURATION_RETRY_MIN_S = 30
 
 
 class FingerprintError(RuntimeError):
@@ -64,15 +81,32 @@ class FingerprintProvider(ABC):
         """
 
 
-def _join_artist_names(artists: list[dict[str, Any]]) -> str | None:
-    """Fügt die Artist-Namen inkl. Join-Phrases zu einem String zusammen."""
+def _join_artist_names(artists: list[Any]) -> str | None:
+    """Fügt die Artist-Namen inkl. Join-Phrases zu einem String zusammen.
+
+    Mit ``usermeta`` liefert AcoustID ``artists`` teils als Liste von Strings
+    statt Dicts — beides wird unterstützt.
+    """
     if not artists:
         return None
     parts: list[str] = []
     for a in artists:
-        parts.append(str(a.get("name", "")))
-        parts.append(str(a.get("joinphrase", "")))
+        if isinstance(a, dict):
+            parts.append(str(a.get("name", "")))
+            parts.append(str(a.get("joinphrase", "")))
+        else:
+            parts.append(str(a))
     return "".join(parts).strip() or None
+
+
+def _artist_mbid(artists: list[Any]) -> str | None:
+    """Erste Artist-MBID, falls die Artists als Dict-Liste vorliegen."""
+    if not artists:
+        return None
+    first = artists[0]
+    if isinstance(first, dict):
+        return str(first.get("id"))
+    return None
 
 
 def _pick_best_candidate(
@@ -82,7 +116,9 @@ def _pick_best_candidate(
     """Wählt den besten AcoustID-Kandidaten.
 
     Bewertung über alle Recordings aller Ergebnisse:
-      1. Primär: kleinste |duration - real_duration| (harter Filter via Toleranz)
+      1. Primär: kleinste |duration - real_duration| (harter Filter: das Recording
+         muss in die Datei passen — Radio-Rips sind meist LÄNGER als das Original,
+         daher wird nur verworfen, wenn das Recording die Datei übersteigt)
       2. Sekundär: höchstes ``sources``
       3. Tiebreaker: höchster ``score``
 
@@ -100,7 +136,7 @@ def _pick_best_candidate(
             sources = int(recording.get("sources") or 0)
             artists = recording.get("artists") or []
             artist_name = _join_artist_names(artists)
-            artist_mbid = str(artists[0].get("id")) if artists else None
+            artist_mbid = _artist_mbid(artists)
             if not recording_id and not title:
                 continue
             if duration is None or real_duration is None:
@@ -108,7 +144,10 @@ def _pick_best_candidate(
                 delta = float("inf")
             else:
                 delta = abs(float(duration) - real_duration)
-                if delta > _DURATION_TOLERANCE_S:
+                # Einseitiger Filter: Das Recording darf die Datei höchstens um
+                # die Toleranz übersteigen. Ist die Datei LÄNGER (Jingle/Moderation/
+                # Talkover im Radio-Rip), bleibt der Kandidat trotzdem gültig.
+                if float(duration) - real_duration > _DURATION_TOLERANCE_S:
                     continue
             candidates.append((delta, sources, score, recording_id, title, artist_name or "", artist_mbid))
 
@@ -145,24 +184,52 @@ class AcoustidFingerprintProvider(FingerprintProvider):
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
-                # parse=False liefert die volle JSON-Antwort (recordings, duration,
-                # sources, releasegroups, artists) — nötig für die Kandidaten-Auswahl.
-                meta = ["recordings", "releases", "releasegroups", "sources"]
-                payload = await loop.run_in_executor(None, acoustid.match, self._api_key, str(path), meta, False)
-        except acoustid.WebServiceError as exc:
-            msg = str(exc)
-            if "status: error" in msg:
-                raise FingerprintError(f"AcoustID API error (invalid key?): {exc}") from exc
-            raise FingerprintError(f"acoustid lookup failed: {exc}") from exc
+                # Fingerprint nur einmal erzeugen; der Lookup läuft mit mehreren
+                # Dauerwerten (siehe _candidate_durations).
+                full_duration, fp = await loop.run_in_executor(None, acoustid.fingerprint_file, str(path))
+        except acoustid.NoBackendError as exc:
+            raise FingerprintError(f"acoustid backend unavailable: {exc}") from exc
         except acoustid.FingerprintGenerationError as exc:
             raise NonRetriableFingerprintError(str(exc)) from exc
         except Exception as exc:
-            raise FingerprintError(f"acoustid lookup failed: {exc}") from exc
+            raise FingerprintError(f"acoustid fingerprint failed: {exc}") from exc
 
-        results = payload.get("results") if isinstance(payload, dict) else None
-        if not results:
-            return None
-        best = _pick_best_candidate(results, real_duration)
+        # parse=False liefert die volle JSON-Antwort (recordings, duration,
+        # sources, releasegroups, artists) — nötig für die Kandidaten-Auswahl.
+        # usermeta sorgt dafür, dass das recordings-Array zuverlässiger gefüllt
+        # wird (sonst liefert AcoustID oft nur {id, score} ohne recordings).
+        meta = ["recordings", "releases", "releasegroups", "sources", "usermeta"]
+        best: tuple[float, str, str, str, str | None] | None = None
+        best_duration: int | None = None
+        for duration_s in self._candidate_durations(full_duration):
+            try:
+                payload = await loop.run_in_executor(None, acoustid.lookup, self._api_key, fp, duration_s, meta)
+            except acoustid.WebServiceError as exc:
+                msg = str(exc)
+                if "status: error" in msg:
+                    raise FingerprintError(f"AcoustID API error (invalid key?): {exc}") from exc
+                raise FingerprintError(f"acoustid lookup failed: {exc}") from exc
+            except Exception as exc:
+                raise FingerprintError(f"acoustid lookup failed: {exc}") from exc
+
+            found = payload.get("results") if isinstance(payload, dict) else None
+            if not found:
+                continue
+            candidate = _pick_best_candidate(found, real_duration)
+            if candidate is None:
+                continue
+            cand_score, cand_rid, cand_artist, cand_title, _ = candidate
+            if cand_score >= self._min_score and bool(cand_rid) and (cand_artist or cand_title):
+                # Erster akzeptabler Kandidat gewinnt — spart API-Calls.
+                best = candidate
+                best_duration = duration_s
+                break
+            # Noch kein akzeptabler Kandidat: besseren Zwischenstand merken,
+            # damit ein späterer Dauerwert (oft deutlich besser) weitersuchen darf.
+            if best is None or cand_score > best[0]:
+                best = candidate
+                best_duration = duration_s
+
         if best is None:
             return None
         score, recording_id, artist, title, artist_mbid = best
@@ -170,6 +237,12 @@ class AcoustidFingerprintProvider(FingerprintProvider):
             return None
         if not artist and not title:
             return None
+        if best_duration is not None and best_duration != int(full_duration):
+            _log.info(
+                "AcoustID: duration %ss lieferte den Treffer (volle Dateilänge %ss)",
+                best_duration,
+                int(full_duration),
+            )
         return FingerprintResult(
             artist=artist,
             title=title,
@@ -177,6 +250,26 @@ class AcoustidFingerprintProvider(FingerprintProvider):
             recording_id=recording_id,
             artist_mbid=artist_mbid,
         )
+
+    @classmethod
+    def _candidate_durations(cls, full_duration: float) -> list[int]:
+        """Liefert eine absteigende Liste von ``duration``-Werten für den Lookup.
+
+        Der AcoustID-Server verwirft Treffer, wenn die gesendete ``duration``
+        von der Dauer des DB-Recordings abweicht (oft schon ±1-2s). Radio-Rips
+        sind häufig länger als das Original (Jingle/Moderation am Anfang/Ende),
+        daher wird zuerst die volle Dateilänge probiert und dann eine absteigende
+        Reihe, bis ein Treffer kommt. Rein deterministisch und sortiert, damit
+        die ersten Werte die wahrscheinlichsten sind.
+        """
+        full = int(full_duration)
+        candidates = [full]
+        for step in _DURATION_RETRY_STEPS_S:
+            candidate = full - step
+            if candidate < _DURATION_RETRY_MIN_S:
+                break
+            candidates.append(candidate)
+        return candidates
 
     @staticmethod
     def _read_duration(path: Path) -> float | None:

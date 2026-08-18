@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,8 +15,28 @@ from radio_ripper.services.fingerprint import (
 )
 
 
-def _payload(recordings: list[dict]) -> dict:
-    return {"status": "ok", "results": [{"id": "r1", "score": 0.9, "recordings": recordings}]}
+def _payload(recordings: list[dict], *, score: float = 0.9) -> dict:
+    return {"status": "ok", "results": [{"id": "r1", "score": score, "recordings": recordings}]}
+
+
+def _no_results() -> dict:
+    return {"status": "ok", "results": []}
+
+
+def _patch_lookup(payloads, full_duration: float = 200.0, fingerprint: bytes = b"fp"):
+    """Patches fingerprint_file + lookup und liefert einen einzelnen ContextManager.
+
+    ``payloads`` kann ein einzelnes Dict (identische Antwort für jeden
+    Dauerwert) oder eine Liste von Dicts sein (ein Eintrag pro Dauerwert, in
+    aufsteigender Reihenfolge der Versuche).
+    """
+    stack = ExitStack()
+    stack.enter_context(patch("acoustid.fingerprint_file", return_value=(full_duration, fingerprint)))
+    if isinstance(payloads, dict):
+        stack.enter_context(patch("acoustid.lookup", return_value=payloads))
+    else:
+        stack.enter_context(patch("acoustid.lookup", side_effect=payloads))
+    return stack
 
 
 def _recording(
@@ -41,7 +62,7 @@ class TestAcoustidFingerprintProvider:
         provider = AcoustidFingerprintProvider("test-key", min_score=0.5)
         fake = _payload([_recording(title="Test Title")])
 
-        with patch("acoustid.match", return_value=fake):
+        with _patch_lookup(fake):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
 
         assert result is not None
@@ -55,14 +76,14 @@ class TestAcoustidFingerprintProvider:
         provider = AcoustidFingerprintProvider("test-key", min_score=0.95)
         fake = _payload([_recording(title="Test Title")])
 
-        with patch("acoustid.match", return_value=fake):
+        with _patch_lookup(fake):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
 
         assert result is None
 
     async def test_returns_none_when_no_results(self) -> None:
         provider = AcoustidFingerprintProvider("test-key")
-        with patch("acoustid.match", return_value={"status": "ok", "results": []}):
+        with _patch_lookup(_no_results()):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
         assert result is None
 
@@ -70,7 +91,8 @@ class TestAcoustidFingerprintProvider:
         """Infrastructure failures (API down, network) must raise, NOT return None."""
         provider = AcoustidFingerprintProvider("test-key")
         with (
-            patch("acoustid.match", side_effect=RuntimeError("API down")),
+            patch("acoustid.fingerprint_file", return_value=(200.0, b"fp")),
+            patch("acoustid.lookup", side_effect=RuntimeError("API down")),
             pytest.raises(FingerprintError, match="acoustid lookup failed"),
         ):
             await provider.fingerprint(Path("/tmp/test.mp3"))
@@ -93,7 +115,7 @@ class TestAcoustidFingerprintProvider:
         provider = AcoustidFingerprintProvider("test-key", min_score=0.0)
         fake = _payload([_recording(title="", artist="")])
 
-        with patch("acoustid.match", return_value=fake):
+        with _patch_lookup(fake):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
         assert result is None
 
@@ -102,7 +124,8 @@ class TestAcoustidFingerprintProvider:
         provider = AcoustidFingerprintProvider("test-key")
         original_exc = ValueError("bad api key")
         with (
-            patch("acoustid.match", side_effect=original_exc),
+            patch("acoustid.fingerprint_file", return_value=(200.0, b"fp")),
+            patch("acoustid.lookup", side_effect=original_exc),
             pytest.raises(FingerprintError) as exc_info,
         ):
             await provider.fingerprint(Path("/tmp/test.mp3"))
@@ -125,7 +148,7 @@ class TestAcoustidFingerprintProvider:
             ]
         )
         with (
-            patch("acoustid.match", return_value=fake),
+            _patch_lookup(fake),
             patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=229.0),
         ):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
@@ -144,7 +167,7 @@ class TestAcoustidFingerprintProvider:
             ]
         )
         with (
-            patch("acoustid.match", return_value=fake),
+            _patch_lookup(fake),
             patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=200.0),
         ):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
@@ -152,16 +175,36 @@ class TestAcoustidFingerprintProvider:
         assert result.recording_id == "many"
 
     async def test_no_candidate_in_tolerance_returns_none(self) -> None:
-        """Kein Kandidat innerhalb der Dauer-Toleranz → kein Match."""
+        """Kein Kandidat innerhalb der Dauer-Toleranz → kein Match.
+
+        Der Filter ist einseitig: Das Recording darf die Datei nicht deutlich
+        übersteigen (Kandidat kann die Datei gar nicht enthalten). Kürzere
+        Recordings sind ok (Radio-Rip mit Jingle/Moderation ist länger als das
+        Original).
+        """
         provider = AcoustidFingerprintProvider("test-key", min_score=0.0)
-        # Reale Dauer ~200s, Kandidat liegt 30s daneben (> Toleranz 10s)
-        fake = _payload([_recording(title="Far Off", duration=170.0, sources=10)])
+        # Reale Dauer ~200s, Kandidat ist 30s LÄNGER als die Datei (> Toleranz 10s)
+        fake = _payload([_recording(title="Too Long", duration=230.0, sources=10)])
         with (
-            patch("acoustid.match", return_value=fake),
+            _patch_lookup(fake),
             patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=200.0),
         ):
             result = await provider.fingerprint(Path("/tmp/test.mp3"))
         assert result is None
+
+    async def test_shorter_recording_still_matches_radio_rip(self) -> None:
+        """Radio-Rips sind länger als das Original: Ein kürzeres Recording
+        (Jingle/Moderation am Anfang/Ende) darf NICHT verworfen werden."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.0)
+        # Datei 267s, Recording nur 241s — typischer Radio-Rip.
+        fake = _payload([_recording(title="Summer of 69", artist="Bryan Adams", duration=241.76)])
+        with (
+            _patch_lookup(fake),
+            patch("radio_ripper.services.fingerprint.AcoustidFingerprintProvider._read_duration", return_value=266.8),
+        ):
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert result is not None
+        assert result.recording_id == "rec123"
 
     async def test_webservice_error_raised_as_fingerprint_error(self) -> None:
         """AcoustID API errors (invalid key, rate limit) raise WebServiceError;
@@ -174,7 +217,98 @@ class TestAcoustidFingerprintProvider:
             pytest.skip("acoustid not installed; WebServiceError unavailable")
         else:
             with (
-                patch("acoustid.match", side_effect=WebServiceError("error 5: invalid key")),
+                patch("acoustid.fingerprint_file", return_value=(200.0, b"fp")),
+                patch("acoustid.lookup", side_effect=WebServiceError("error 5: invalid key")),
                 pytest.raises(FingerprintError, match="acoustid lookup failed"),
             ):
                 await provider.fingerprint(Path("/tmp/test.mp3"))
+
+    async def test_retries_reduced_duration_when_full_duration_has_no_results(self) -> None:
+        """Radio-Rips sind oft länger als das Original — der Lookup mit voller
+        Dateilänge liefert dann 0 Ergebnisse, obwohl ein reduzierter Dauerwert
+        matcht. Der Provider muss die Dauer-Werte durchprobieren."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.5)
+        # Datei ist 202s, der Match existiert erst bei duration=200.
+        full_duration = 202.0
+        fake = _payload([_recording(title="Blinding Lights", artist="The Weeknd", duration=200.0)])
+        empty = _no_results()
+
+        lookup_mock = patch("acoustid.lookup", side_effect=[empty, fake])
+        fp_mock = patch("acoustid.fingerprint_file", return_value=(full_duration, b"fp"))
+        with lookup_mock as mock_lookup, fp_mock:
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+
+        assert result is not None
+        assert result.title == "Blinding Lights"
+        assert result.artist == "The Weeknd"
+        # lookup wurde mit voller Länge (202) und dann reduziert (200) aufgerufen
+        called_durations = [call.args[2] for call in mock_lookup.call_args_list]
+        assert 202 in called_durations
+        assert 200 in called_durations
+
+    async def test_low_score_first_result_does_not_stop_duration_search(self) -> None:
+        """Ein Treffer mit zu niedrigem Score bei der vollen Dateilänge darf die
+        Dauer-Suche nicht abbrechen — ein reduzierter Dauerwert kann deutlich
+        besser matchen (beobachtet bei Radio-Rips)."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.85)
+        full_duration = 280.0
+        # dur=280 liefert nur einen schwachen Treffer, dur=220 den guten.
+        weak = _payload(
+            [_recording(title="One More Night", artist="Phil Collins", duration=280.0)],
+            score=0.66,
+        )
+        strong = _payload(
+            [_recording(title="One More Night", artist="Phil Collins", duration=240.0)],
+            score=0.98,
+        )
+
+        lookup_mock = patch("acoustid.lookup", side_effect=[weak, strong])
+        fp_mock = patch("acoustid.fingerprint_file", return_value=(full_duration, b"fp"))
+        with lookup_mock as mock_lookup, fp_mock:
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+
+        assert result is not None
+        assert result.score >= 0.85
+        # Es wurden mehrere Dauerwerte probiert (nicht nach dem ersten abgebrochen)
+        assert mock_lookup.call_count >= 2
+        called_durations = [call.args[2] for call in mock_lookup.call_args_list]
+        assert 280 in called_durations
+        assert len(called_durations) == 2
+
+    async def test_no_result_after_all_duration_retries_returns_none(self) -> None:
+        """Wenn kein Dauerwert Treffer liefert, ist es ein echter No-Match."""
+        provider = AcoustidFingerprintProvider("test-key")
+        empty = _no_results()
+        # Dauerwerte 202, 200, 198, ... — alle ohne Treffer.
+        durations = AcoustidFingerprintProvider._candidate_durations(202.0)
+        with (
+            patch("acoustid.fingerprint_file", return_value=(202.0, b"fp")),
+            patch("acoustid.lookup", return_value=empty) as lookup_mock,
+        ):
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert result is None
+        assert lookup_mock.call_count == len(durations)
+
+    def test_candidate_durations_descend_from_full(self) -> None:
+        """Die Kandidaten-Dauern starten bei der vollen Dateilänge und steigen ab."""
+        durations = AcoustidFingerprintProvider._candidate_durations(202.0)
+        assert durations[0] == 202
+        assert durations == sorted(set(durations), reverse=True)
+        assert all(d >= 30 for d in durations)
+
+    def test_candidate_durations_respect_minimum(self) -> None:
+        """Kurze Dateien dürfen nicht unter die Untergrenze fallen."""
+        durations = AcoustidFingerprintProvider._candidate_durations(35.0)
+        assert durations[0] == 35
+        assert all(d >= 30 for d in durations)
+
+    async def test_handles_usermeta_artists_as_strings(self) -> None:
+        """Mit ``usermeta`` liefert AcoustID ``artists`` teils als reine Strings —
+        das darf nicht crashen, sondern muss als Artist-Name übernommen werden."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.5)
+        fake = _payload([{"id": "rec-str", "title": "Blinding Lights", "artists": ["The Weeknd"]}])
+        with _patch_lookup(fake):
+            result = await provider.fingerprint(Path("/tmp/test.mp3"))
+        assert result is not None
+        assert result.artist == "The Weeknd"
+        assert result.recording_id == "rec-str"
