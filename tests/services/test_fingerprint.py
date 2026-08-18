@@ -377,3 +377,106 @@ class TestAcoustidFingerprintProvider:
             await provider.fingerprint(Path("/tmp/test.mp3"))
         assert lookup_mock.call_count == 1
         sleep_mock.assert_not_awaited()
+
+    async def test_high_score_without_recordings_uses_file_tags_fallback(self, tmp_path: Path) -> None:
+        """AcoustID liefert bei manchen Tracks nur {id, score} ohne recordings —
+        die Datei ist trotzdem eindeutig identifiziert. Datei-Tags als Fallback
+        nutzen, damit sie nicht gelöscht wird."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.75)
+        # Ergebnis OHNE recordings-Array, aber mit hohem Score + id.
+        payload = {"status": "ok", "results": [{"id": "track-abc", "score": 0.875}]}
+        mp3 = tmp_path / "song.mp3"
+        _write_id3(mp3, artist="The Weeknd", title="Pray For Me")
+        with (
+            patch("acoustid.fingerprint_file", return_value=(175.0, b"fp")),
+            patch("acoustid.lookup", return_value=payload),
+        ):
+            result = await provider.fingerprint(mp3)
+        assert result is not None
+        assert result.artist == "The Weeknd"
+        assert result.title == "Pray For Me"
+        assert result.recording_id == "track-abc"
+        assert result.score == 0.875
+
+    async def test_high_score_without_recordings_and_no_tags_returns_none(self, tmp_path: Path) -> None:
+        """Ohne Datei-Tags und ohne recordings gibt es nichts Brauchbares — aber
+        es darf NICHT als FingerprintError enden (Datei wird sonst gelöscht)."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.75)
+        payload = {"status": "ok", "results": [{"id": "track-abc", "score": 0.875}]}
+        mp3 = tmp_path / "song.mp3"
+        mp3.write_bytes(b"not a real mp3")
+        with (
+            patch("acoustid.fingerprint_file", return_value=(175.0, b"fp")),
+            patch("acoustid.lookup", return_value=payload),
+        ):
+            result = await provider.fingerprint(mp3)
+        assert result is None
+
+    async def test_segment_fallback_rescues_polluted_file(self, tmp_path: Path) -> None:
+        """Voll-Lookup (erste 120s) liefert 0, aber ein späteres 30s-Fenster
+        matcht — Fenster-Verschmutzung durch Jingle/Moderation am Anfang."""
+        provider = AcoustidFingerprintProvider("test-key", min_score=0.75)
+        # Echte, dekodierbare MP3 (sine, 180s) — ffmpeg+fpcalc extrahieren ein
+        # 30s-Fenster. Der Lookup ist gemockt (FakeAcoustid liefert den Treffer).
+        mp3 = tmp_path / "real.mp3"
+        _write_sine_mp3(mp3, seconds=180)
+        seg_payload = _payload([_recording(title="Fairground", artist="Simply Red")], score=0.786)
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        result = await provider._segment_fallback(loop, _FakeAcoustid(seg_payload), ["recordings"], mp3, 180.0)
+        assert result is not None
+        assert result.title == "Fairground"
+        assert result.artist == "Simply Red"
+
+
+class _FakeAcoustid:
+    """Minimaler Stub, damit _segment_fallback ohne echte API funktioniert."""
+
+    WebServiceError = RuntimeError
+
+    def __init__(self, payload) -> None:
+        self._payload = payload
+
+    def lookup(self, api_key, fp, duration, meta):
+        return self._payload
+
+
+def _write_sine_mp3(path: Path, *, seconds: int = 180) -> None:
+    """Erzeugt eine echte, dekodierbare MP3 (sine) für Segment-Fallback-Tests."""
+    import shutil
+    import subprocess
+
+    assert shutil.which("ffmpeg") is not None, "ffmpeg required for this test"
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "quiet",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}",
+            "-acodec",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _write_id3(path: Path, *, artist: str, title: str) -> None:
+    """Schreibt minimal gültige ID3v2-Tags (TPE1/TIT2) in eine MP3-Datei."""
+    path.write_bytes(b"\x00" * 2048)  # Platz für ID3v2-Header
+    from mutagen.id3 import ID3, TIT2, TPE1
+
+    tags = ID3()
+    tags.add(TPE1(encoding=3, text=[artist]))
+    tags.add(TIT2(encoding=3, text=[title]))
+    tags.save(str(path), v2_version=3)

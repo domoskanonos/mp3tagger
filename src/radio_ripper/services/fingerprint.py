@@ -14,7 +14,11 @@ database" — callers may safely discard such files.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shutil
+import subprocess
+import tempfile
 import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -51,6 +55,16 @@ _THROTTLE_MAX_ATTEMPTS = 3
 # 2 = missing required parameter, 3 = invalid parameter value/fingerprint.
 # Diese Fehler sind permanent — Retry bringt nichts.
 _PERMANENT_ERROR_CODES = frozenset({2, 3, 4})
+
+# Fallback bei Fenster-Verschmutzung: ``pyacoustid`` fingert nur die ersten 120s
+# (``MAX_AUDIO_LENGTH``). Enthalten diese einen Jingle/Moderation am Anfang,
+# matcht der Voll-Fingerprint nie, obwohl der Song später in der Datei liegt.
+# Dann werden einzelne 30s-Fenster extrahiert und einzeln gefingert. Wichtig:
+# kürzere Fenster (30s statt 60s) matchen zuverlässiger, weil sie weniger
+# Fremd-Audio enthalten (SIMPLY RED: Voll=0, 60s-Fenster ab 90s=0, 30s-Fenster
+# 90-120s matcht korrekt mit 0.79).
+_SEGMENT_FALLBACK_STARTS_S = (0, 30, 60, 90, 120, 150)
+_SEGMENT_FALLBACK_LENGTH_S = 30
 
 
 class FingerprintError(RuntimeError):
@@ -114,6 +128,48 @@ def _artist_mbid(artists: list[Any]) -> str | None:
     if isinstance(first, dict):
         return str(first.get("id"))
     return None
+
+
+def _read_file_tags(path: Path) -> tuple[str, str]:
+    """Liest artist/title aus den ID3-Tags der Datei (Streamripper-Fallback).
+
+    AcoustID liefert bei manchen Tracks nur ``id`` + ``score`` ohne
+    ``recordings``-Metadaten (keine MusicBrainz-Verknüpfung). Die Streamripper-
+    Aufnahme trägt aber oft schon Künstler/Titel im Tag — die werden dann als
+    Fallback übernommen, damit die Datei nicht verloren geht.
+    """
+    try:
+        from mutagen.id3 import ID3, TIT2, TPE1
+
+        tags = ID3(str(path))
+        artist = ""
+        title = ""
+
+        def _text(frame_key: str) -> str:
+            frame = tags.get(frame_key)
+            if frame is None:
+                return ""
+            try:
+                return str(frame)
+            except Exception:
+                return ""
+
+        # Keys sind teils Frames ("TIT2") teils Klassen (TIT2) — beides abdecken.
+        artist = _text("TPE1")
+        title = _text("TIT2")
+        if not artist and TPE1 in tags:
+            artist = str(tags[TPE1])
+        if not title and TIT2 in tags:
+            title = str(tags[TIT2])
+        # Streamripper-Titel wie '"Blinding Lights" von The Weeknd' zerlegen.
+        if title and not artist:
+            for marker in (" von ", " - "):
+                if marker in title:
+                    title, artist = title.rsplit(marker, 1)
+                    break
+        return artist.strip().strip('"'), title.strip().strip('"')
+    except Exception:
+        return "", ""
 
 
 def _pick_best_candidate(
@@ -201,12 +257,21 @@ class AcoustidFingerprintProvider(FingerprintProvider):
         meta = ["recordings", "releases", "releasegroups", "sources", "usermeta"]
         best: tuple[float, str, str, str, str | None] | None = None
         best_duration: int | None = None
+        # Höchster Roh-Score über alle Ergebnisse (auch ohne recordings) — dient
+        # als "Treffer vorhanden"-Signal, wenn kein recordings-Kandidat existiert.
+        raw_best_score = 0.0
+        raw_best_id: str | None = None
         for duration_s in self._candidate_durations(full_duration):
             payload = await self._lookup_with_throttle_retry(loop, acoustid, fp, duration_s, meta, path)
 
             found = payload.get("results") if isinstance(payload, dict) else None
             if not found:
                 continue
+            for result in found:
+                raw_score = float(result.get("score") or 0.0)
+                if raw_score > raw_best_score:
+                    raw_best_score = raw_score
+                    raw_best_id = str(result.get("id") or "")
             candidate = _pick_best_candidate(found, real_duration)
             if candidate is None:
                 continue
@@ -225,6 +290,33 @@ class AcoustidFingerprintProvider(FingerprintProvider):
                 best_duration = duration_s
 
         if best is None:
+            # Treffer mit hohem Score, aber OHNE recordings-Metadaten (keine
+            # MusicBrainz-Verknüpfung im AcoustID-DB). Die Datei ist trotzdem
+            # eindeutig identifiziert — nicht löschen. Fallback auf Datei-Tags
+            # (Streamripper schreibt Künstler/Titel) + AcoustID-Track-ID.
+            if raw_best_score >= self._min_score and raw_best_id:
+                file_artist, file_title = _read_file_tags(path)
+                if file_artist or file_title:
+                    _log.info(
+                        "AcoustID: %s Treffer ohne recordings (score=%.3f) — Datei-Tags als Fallback: %s - %s",
+                        path.name,
+                        raw_best_score,
+                        file_artist or "?",
+                        file_title or "?",
+                    )
+                    return FingerprintResult(
+                        artist=file_artist,
+                        title=file_title,
+                        score=raw_best_score,
+                        recording_id=raw_best_id,
+                        artist_mbid=None,
+                    )
+            # Kein Treffer mit der vollen Datei (erste 120s): Radio-Rips enthalten
+            # am Anfang oft Jingle/Moderation — der Song liegt erst später. Dann
+            # einzelne Fenster der Datei fingern und erneut suchen.
+            segment_result = await self._segment_fallback(loop, acoustid, meta, path, real_duration)
+            if segment_result is not None:
+                return segment_result
             return None
         score, recording_id, artist, title, artist_mbid = best
         if score < self._min_score:
@@ -342,6 +434,118 @@ class AcoustidFingerprintProvider(FingerprintProvider):
                 _THROTTLE_MAX_ATTEMPTS,
             )
             await asyncio.sleep(_THROTTLE_WAIT_S)
+
+    async def _segment_fallback(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        acoustid: Any,
+        meta: list[str],
+        path: Path,
+        real_duration: float | None,
+    ) -> FingerprintResult | None:
+        """Fingert einzelne 60s-Fenster der Datei und sucht erneut.
+
+        Der Voll-Lookup nutzt die ersten 120s der Datei (``MAX_AUDIO_LENGTH``).
+        Wenn dort Jingle/Moderation liegt, ist der Fingerprint verschmutzt und
+        liefert 0 Treffer — obwohl der Song weiter hinten sauber vorliegt
+        (z.B. SIMPLY RED: Voll=0, Fenster ab 90s matcht korrekt). Hier werden
+        Fenster an den konfigurierten Offsets extrahiert (ffmpeg), mit fpcalc
+        gefingert und gelooked-up.
+
+        Fehlgeschlagen (ffmpeg/fpcalc fehlt, kein Treffer) → ``None``.
+        """
+        if shutil.which("ffmpeg") is None or shutil.which("fpcalc") is None:
+            _log.debug("[%s] Segment-Fallback übersprungen (ffmpeg/fpcalc fehlt)", path.name)
+            return None
+
+        for start in _SEGMENT_FALLBACK_STARTS_S:
+            if real_duration is not None and start >= real_duration:
+                continue
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    seg_path = Path(tmpdir) / "seg.mp3"
+                    proc = subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-v",
+                            "error",
+                            "-ss",
+                            str(start),
+                            "-t",
+                            str(_SEGMENT_FALLBACK_LENGTH_S),
+                            "-i",
+                            str(path),
+                            str(seg_path),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if proc.returncode != 0:
+                        continue
+                    fpcalc_out = subprocess.run(
+                        ["fpcalc", "-json", str(seg_path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                    if fpcalc_out.returncode != 0:
+                        continue
+                    seg_data = json.loads(fpcalc_out.stdout)
+                    seg_duration = int(float(seg_data["duration"]))
+                    seg_fp = seg_data["fingerprint"]
+            except (subprocess.TimeoutExpired, OSError, ValueError, json.JSONDecodeError):
+                continue
+
+            payload = await self._lookup_with_throttle_retry(loop, acoustid, seg_fp, seg_duration, meta, path)
+            found = payload.get("results") if isinstance(payload, dict) else None
+            if not found:
+                continue
+            candidate = _pick_best_candidate(found, real_duration)
+            if candidate is None:
+                # Hoher Segment-Score, aber ohne recordings-Metadaten → Fallback
+                # auf Datei-Tags (gleiche Logik wie im Voll-Lookup).
+                raw = max((float(r.get("score") or 0.0) for r in found), default=0.0)
+                raw_id = next((str(r.get("id") or "") for r in found if r.get("id")), None)
+                if raw >= self._min_score and raw_id:
+                    file_artist, file_title = _read_file_tags(path)
+                    if file_artist or file_title:
+                        _log.info(
+                            "AcoustID: Segment ab %ss für %s ohne recordings (score=%.3f) — "
+                            "Datei-Tags als Fallback: %s - %s",
+                            start,
+                            path.name,
+                            raw,
+                            file_artist or "?",
+                            file_title or "?",
+                        )
+                        return FingerprintResult(
+                            artist=file_artist,
+                            title=file_title,
+                            score=raw,
+                            recording_id=raw_id,
+                            artist_mbid=None,
+                        )
+                continue
+            cand_score, cand_rid, cand_artist, cand_title, cand_mbid = candidate
+            if cand_score >= self._min_score and (cand_artist or cand_title):
+                _log.info(
+                    "AcoustID: Segment ab %ss matcht für %s (score=%.3f) — %s - %s",
+                    start,
+                    path.name,
+                    cand_score,
+                    cand_artist or "?",
+                    cand_title or "?",
+                )
+                return FingerprintResult(
+                    artist=cand_artist,
+                    title=cand_title,
+                    score=cand_score,
+                    recording_id=cand_rid,
+                    artist_mbid=cand_mbid,
+                )
+        return None
 
     @staticmethod
     def _read_duration(path: Path) -> float | None:

@@ -24,7 +24,7 @@ class Settings(BaseModel):
     cover_timeout: float = Field(default=15.0, ge=0.5)
 
     source: Path = Field(default=Path("./source"))
-    acoustid_min_score: float = Field(default=0.85, ge=0.0, le=1.0)
+    acoustid_min_score: float = Field(default=0.75, ge=0.0, le=1.0)
     min_popularity_rank: int = Field(default=100000, ge=0)
     max_concurrent: int = Field(default=4, ge=1)
 
