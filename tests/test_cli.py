@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from radio_ripper.cli import _requeue_failed_files, main
+
+_LOGGER = logging.getLogger("test_cli")
+_LOGGER.addHandler(logging.NullHandler())
 
 
 class TestCli:
@@ -48,7 +52,7 @@ class TestRequeueFailedFiles:
         (failed / "other.mp3").write_bytes(b"data")
         inbox = tmp_path / "inbox"
 
-        count = _requeue_failed_files(failed, inbox, _NullLogger())
+        count = _requeue_failed_files(failed, inbox, _LOGGER)
 
         assert count == 2
         assert (inbox / "song.mp3").exists()
@@ -63,16 +67,11 @@ class TestRequeueFailedFiles:
         inbox.mkdir()
         (inbox / "song.mp3").write_bytes(b"other")
 
-        count = _requeue_failed_files(failed, inbox, _NullLogger())
+        count = _requeue_failed_files(failed, inbox, _LOGGER)
 
         assert count == 0
         assert (failed / "song.mp3").exists()  # bleibt liegen, kein Überschreiben
 
     def test_missing_failed_dir_is_noop(self, tmp_path: Path):
-        count = _requeue_failed_files(tmp_path / "nope", tmp_path / "inbox", _NullLogger())
+        count = _requeue_failed_files(tmp_path / "nope", tmp_path / "inbox", _LOGGER)
         assert count == 0
-
-
-class _NullLogger:
-    def warning(self, *args, **kwargs):
-        pass
