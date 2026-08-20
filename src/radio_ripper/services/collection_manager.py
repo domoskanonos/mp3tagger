@@ -11,7 +11,24 @@ Nebenwirkungen) — einfach zu testen und in der Pipeline einsetzbar.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from radio_ripper.infra.catalog import SongRecord
+
+
+class RejectReason(StrEnum):
+    """Einzige Gründe, aus denen eine Datei gelöscht werden darf (Deletion-Policy).
+
+    Es darf NUR gelöscht werden, wenn einer dieser Gründe vorliegt — ein
+    zu niedriger/fehlender Score, eine korrupte Datei oder eine bereits
+    erhaltene bessere Version desselben Songs. In allen anderen Fällen wird
+    die Datei aufbewahrt (``work_dir/manual_review/``).
+    """
+
+    SCORE_BELOW_MIN = "score_below_min"
+    CORRUPT = "corrupt"
+    BETTER_VERSION_EXISTS = "better_version_exists"
+
 
 # ── Versions-Vergleich ──────────────────────────────────────────────────────
 
@@ -93,6 +110,7 @@ def pick_eviction_candidate(
 
 
 __all__ = [
+    "RejectReason",
     "is_better_version",
     "is_same_version",
     "pick_eviction_candidate",

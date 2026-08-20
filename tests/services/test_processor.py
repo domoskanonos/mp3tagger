@@ -627,10 +627,14 @@ class TestFinalizeAndMove:
         _write_mp3(src, size=512)
         meta = self._meta("Artist", "Title", "r1")
         ok = await proc._finalize_and_move(meta=meta, source_path=src, staged_path=src)
-        # Kollision: existierende (andere recording_id) bleibt, neue wird verworfen
+        # Kollision: existierende (andere recording_id) bleibt, die neue Datei wird
+        # aufbewahrt (Deletion-Policy) — sie wandert nach manual_review/, nicht gelöscht.
         assert existing.exists()
         assert not src.exists()
-        assert ok is False, "verworfene Datei darf nicht als Erfolg gemeldet werden"
+        assert ok is False, "aufbewahrte Datei darf nicht als Erfolg gemeldet werden"
+        assert list(proc._manual_review_dir.glob("*.mp3")) == [
+            proc._manual_review_dir / "src.mp3"
+        ], "Kollisionsdatei muss in manual_review/ aufbewahrt werden"
 
     async def test_collision_keeps_library_file_when_delete_source_false(self, tmp_path: Path):
         """Bug 1: Enrich-Kollision darf die Bibliotheksdatei NIE löschen.
@@ -1265,11 +1269,11 @@ class TestProcessFileFailurePaths:
         assert not list(proc._temp_dir.rglob("*.mp3"))
 
 
-class TestEarlyPopularityReject:
-    """Stufe B — Popularitäts-Reject VOR den teuren Anreicherungs-Calls."""
+class TestEarlyPopularityCheck:
+    """Stufe B — Deezer-Vorab-Call ist Advisory, löscht aber NIE (Deletion-Policy)."""
 
-    async def test_unpopular_rejected_before_expensive_calls(self, tmp_path: Path):
-        """rank < min → Datei verworfen, OHNE MB/iTunes/LRCLib/CAA-Calls."""
+    async def test_unpopular_track_is_kept_despite_low_rank(self, tmp_path: Path):
+        """rank < min → Datei wird NICHT gelöscht, läuft durch die Pipeline ins Ziel."""
         proc = _make_processor(tmp_path, min_popularity_rank=100)
         proc._inbox.mkdir(parents=True, exist_ok=True)
         mp3 = proc._inbox / "song.mp3"
@@ -1281,28 +1285,27 @@ class TestEarlyPopularityReject:
             score=0.95,
             recording_id="rec-1",
         )
-        proc._metadata = AsyncMock()
+        proc._metadata.fetch.return_value = EnrichedInfo(  # type: ignore[attr-defined]
+            artist="Artist", title="Title", album="Album", genre="Rock"
+        )
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
         proc._cover_provider.fetch_cover_by_recording_id.return_value = None
         proc._cover_provider.fetch_recording_data.return_value = None
         deezer = AsyncMock()
-        deezer.fetch.return_value = DeezerData(rank=50)  # < min
+        deezer.fetch.return_value = DeezerData(rank=50)  # < min → aufbewahrt
         proc._deezer_provider = deezer
 
         await proc._process_one(mp3)
 
-        # Datei verworfen
+        expected = proc._settings.destination / "Artist" / "Album" / "Artist - Title.mp3"
+        assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
         assert not mp3.exists()
-        assert not list(proc._temp_dir.rglob("*.mp3"))
-        assert not list(proc._settings.destination.rglob("*.mp3"))
-        # Stufe B macht nur den einen Deezer-Call — MB/iTunes/CAA wurden NICHT angefragt
         deezer.fetch.assert_awaited_once()
-        proc._metadata.fetch.assert_not_called()
-        proc._cover_provider.fetch_recording_data.assert_not_called()
-        proc._cover_provider.fetch_cover_by_recording_id.assert_not_called()
+        assert not list(proc._manual_review_dir.rglob("*.mp3")), "aufbewahrt? Nein — landet normal im Ziel"
 
-    async def test_unknown_track_rejected_before_expensive_calls(self, tmp_path: Path):
-        """Deezer: 0 Treffer → 'nicht auf Deezer' → verworfen ohne MB/iTunes/CAA."""
+    async def test_unknown_track_not_on_deezer_is_kept(self, tmp_path: Path):
+        """Deezer: 0 Treffer → 'nicht auf Deezer' → NICHT löschen, Pipeline läuft weiter."""
         proc = _make_processor(tmp_path, min_popularity_rank=100)
         proc._inbox.mkdir(parents=True, exist_ok=True)
         mp3 = proc._inbox / "song.mp3"
@@ -1314,18 +1317,23 @@ class TestEarlyPopularityReject:
             score=0.95,
             recording_id="rec-1",
         )
-        proc._metadata = AsyncMock()
+        proc._metadata.fetch.return_value = EnrichedInfo(  # type: ignore[attr-defined]
+            artist="Artist", title="Title", album="Album", genre="Rock"
+        )
+        proc._metadata.download_image = AsyncMock(return_value=None)  # type: ignore[method-assign]
         proc._cover_provider = AsyncMock()
+        proc._cover_provider.fetch_cover_by_recording_id.return_value = None
+        proc._cover_provider.fetch_recording_data.return_value = None
         deezer = AsyncMock()
         deezer.fetch.return_value = None  # 0 Deezer-Treffer
         proc._deezer_provider = deezer
 
         await proc._process_one(mp3)
 
+        expected = proc._settings.destination / "Artist" / "Album" / "Artist - Title.mp3"
+        assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
         assert not mp3.exists()
-        assert not list(proc._settings.destination.rglob("*.mp3"))
-        proc._metadata.fetch.assert_not_called()
-        proc._cover_provider.fetch_recording_data.assert_not_called()
+        deezer.fetch.assert_awaited_once()
 
     async def test_popular_reaches_full_pipeline(self, tmp_path: Path):
         """rank >= min → Datei überlebt Stufe B, der Deezer-Call wird NICHT doppelt gemacht."""
@@ -1357,3 +1365,48 @@ class TestEarlyPopularityReject:
         assert expected.exists(), f"expected {expected}, found: {list(proc._settings.destination.rglob('*.mp3'))}"
         # Stufe B + _collect_metadata: Deezer-Call genau EINMAL (kein Doppel-Fetch)
         deezer.fetch.assert_awaited_once()
+
+
+class TestDeletionPolicy:
+    """Deletion-Policy: unerwartete Fehler → manual_review/, NIE löschen."""
+
+    async def test_unexpected_error_moves_to_manual_review(self, tmp_path: Path):
+        """Beliebiger unerwarteter Fehler nach dem Move ins work_dir → aufbewahren."""
+        proc = _make_processor(tmp_path)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        mp3 = proc._inbox / "song.mp3"
+        _write_mp3(mp3, size=512)
+
+        proc._fingerprint.fingerprint.side_effect = RuntimeError("boom")  # type: ignore[attr-defined]
+
+        await proc._process_one(mp3)
+
+        assert not mp3.exists()
+        assert list(proc._manual_review_dir.glob("*.mp3")) != [], "Datei muss aufbewahrt werden"
+        assert not list(proc._settings.destination.rglob("*.mp3"))
+
+    async def test_move_to_work_dir_failure_preserves_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Verschieben ins work_dir fehlgeschlagen → Datei wird aufbewahrt, nicht gelöscht."""
+        import radio_ripper.services.processor as processor_mod
+
+        proc = _make_processor(tmp_path)
+        proc._inbox.mkdir(parents=True, exist_ok=True)
+        src = proc._inbox / "song.mp3.processing"
+        _write_mp3(src, size=512)
+
+        real_move = processor_mod.shutil.move
+        state = {"n": 0}
+
+        def _fail_first_move(src_path: str, dst_path: str) -> Any:
+            state["n"] += 1
+            if state["n"] == 1:
+                raise OSError("disk full")
+            return real_move(src_path, dst_path)
+
+        monkeypatch.setattr(processor_mod.shutil, "move", _fail_first_move)
+
+        result = await proc._move_to_work_dir(src)
+
+        assert result is None
+        assert not src.exists()
+        assert list(proc._manual_review_dir.glob("*.mp3")) == [proc._manual_review_dir / "song.mp3"]

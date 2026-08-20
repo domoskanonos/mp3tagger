@@ -2,12 +2,17 @@
 
 Scans an ``inbox`` (source) for ``.mp3`` files and processes up to
 ``max_concurrent`` of them in parallel. Per file, mit frühem Abbruch:
-fingerprint → Katalog-Reject (Stufe A, kein API-Call) → Popularitäts-Reject
+fingerprint → Katalog-Reject (Stufe A, kein API-Call) → Deezer-Vorab-Call
 (Stufe B, 1 Deezer-Call) → [CAA+MB || iTunes+Lyrics+ArtImg || Deezer]
 (parallel) → MB-Korrektur → ONE tag write in a ``work_dir`` staging area,
-then atomically moved to ``destination/``. Dateien, die früh verworfen werden
-(Reject), geben ihren Slot sofort frei — kein Stagger. Der MusicBrainz-Lock
-hält das 1-Request-pro-Sekunde-Rate-Limit global ein.
+then atomically moved to ``destination/``. Der MusicBrainz-Lock hält das
+1-Request-pro-Sekunde-Rate-Limit global ein.
+
+Deletion-Policy: Eine Datei darf NUR gelöscht werden, wenn der Score zu
+niedrig/fehlt, die Datei korrupt ist oder eine bessere Version desselben
+Songs bereits im Ziel/Katalog erhalten bleibt. Popularitäts-Rejects (Deezer)
+und Kollisionen löschen NICHT — solche Dateien landen in
+``work_dir/manual_review/``.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import asyncio
 import contextlib
 import logging
 import shutil
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +32,7 @@ from radio_ripper.infra.catalog import Catalog, SongRecord, read_audio_from_file
 from radio_ripper.infra.config import Settings
 from radio_ripper.infra.fs_events import FsEventSource
 from radio_ripper.services.collection_manager import (
+    RejectReason,
     is_better_version,
     pick_eviction_candidate,
 )
@@ -246,21 +253,20 @@ class FileProcessor:
     eine schlafende Festplatte wird nicht periodisch aufgeweckt). Pro Datei:
 
       1. Move ``.processing`` → ``work_dir/``.
-      2. Fingerprint (AcoustID) — Score < min → löschen.
+      2. Fingerprint (AcoustID) — Score < min → löschen; korrupt → löschen.
       3. Parallel: CAA+MB || iTunes+Lyrics+ArtImg || Deezer.
       4. MB-Korrektur (artist/title) — ggf. Deezer re-fetch.
       5. Score-Vergleich mit bestehender Datei im Destination.
       6. ``.untested`` → ``.mp3`` umbenennen.
-      7. Popularitäts-Prüfung über den Deezer-Rang (gleicher API-Call
-         wie Phase 3, kein extra Request). Datei wird gelöscht wenn
-         Deezer sie nicht kennt oder der Rang unter ``min_popularity_rank``
-         liegt.
+      7. Deezer-Rank nur als Metadaten/Log — Deletion-Policy: KEIN Löschen
+         wegen Unpopularität/Unbekanntheit (Datei wird aufbewahrt).
       8. One-Pass Tag-Write (Cover-Prio: Deezer → CAA → iTunes).
       9. Atomarer Move nach ``destination/``; alte Datei wird bei
-         höherem Score ersetzt.
+         höherem Score ersetzt. Kollision (anderer Song) → Aufbewahrung.
 
-    Wenn ein Schritt scheitert, wird die Stage-Datei gelöscht;
-    ``destination/`` wird erst nach vollständigem Erfolg berührt.
+    Deletion-Policy: Gelöscht wird nur bei zu niedrigem/fehlendem Score,
+    korrupter Datei oder vorhandener besserer Version desselben Songs.
+    Alle anderen Abbrüche verschieben die Datei nach ``work_dir/manual_review/``.
     """
 
     def __init__(
@@ -295,6 +301,9 @@ class FileProcessor:
         self._popularity = popularity_provider
         self._lyrics_provider = lyrics_provider
         self._catalog = catalog
+        # Aufbewahrung für Dateien, die nicht gelöscht werden dürfen
+        # (Deletion-Policy), aber auch nicht verarbeitet werden konnten.
+        self._manual_review_dir = settings.work_dir / "manual_review"
         # Pro recording_id ein Lock — verhindert Race Condition bei gleichzeitiger
         # Verarbeitung desselben Songs durch mehrere Worker.
         self._recording_locks: dict[str, asyncio.Lock] = {}
@@ -357,8 +366,8 @@ class FileProcessor:
 
         Einheitlich für Inbox (neue MP3s), Enrich (Bestandsdateien) und Normalize:
         Dateien starten sofort; `max_concurrent` begrenzt die gleichzeitig in Arbeit
-        befindlichen Dateien. Ablehnungen (Fingerprint/Score/Popularität/Katalog) sind
-        kurz und geben ihren Slot sofort frei — kein künstliches 1s-Warten.
+        befindlichen Dateien. Ablehnungen (Fingerprint/Score/Katalog) sind kurz und
+        geben ihren Slot sofort frei — kein künstliches 1s-Warten.
 
         Das MusicBrainz-Rate-Limit (1 req/s) wird NICHT hier garantiert, sondern durch
         den globalen MB-Lock in `_rate_limited_json` — der Batch kann also ohne Timing
@@ -670,9 +679,10 @@ class FileProcessor:
         - Zielpfad via ``compute_file_path`` aus den korrigierten artist/title/album.
         - Ziel existiert nicht → verschieben, leere Alt-Ordner bis destination löschen.
         - Ziel existiert, gleicher Song → bessere Version gewinnt (is_better_version),
-          sonst bleibt die existierende Datei (die neue wird verworfen).
-        - Ziel existiert, anderer Song (Kollision) → neue Datei verwerfen + Error-Log
-          mit allen relevanten Infos. Kein Überschreiben der Bibliothek.
+          sonst bleibt die existierende Datei (die neue wird gelöscht — erlaubter
+          Löschgrund: bessere Version vorhanden).
+        - Ziel existiert, anderer Song (Kollision) → Deletion-Policy: die neue Datei
+          wird aufbewahrt (``manual_review/``), die Bibliothek nie überschrieben.
 
         Args:
             old_paths: Weitere Katalog-Kopien desselben Songs, die NACH erfolgreichem
@@ -808,10 +818,13 @@ class FileProcessor:
                     safe_unlink(source_path, parents_root=self._settings.destination)
                 return False
 
-        # Kollision: anderer Song am Ziel → neue Datei verwerfen + Error-Log.
+        # Kollision: anderer Song am Ziel → Deletion-Policy: KEIN Löschen.
+        # Inbox-Flow (delete_source=True): staged ist die einzige Kopie → aufbewahren.
+        # Enrich-Flow (delete_source=False): staged ist eine wegwerfbare Kopie der
+        # Bibliotheksdatei → nur die Staging-Kopie entfernen, Bibliothek bleibt.
         self._log.error(
             "[COLLISION] %s — Ziel %s gehört einem anderen Song (recording_id=%r vs %r, isrc=%r vs %r). "
-            "Neue Datei verworfen: artist=%r title=%r score=%.4f alt_pfad=%s",
+            "Neue Datei aufbewahrt: artist=%r title=%r score=%.4f alt_pfad=%s",
             source_path.name,
             final_path,
             existing_recording_id,
@@ -823,9 +836,10 @@ class FileProcessor:
             result.score,
             source_path,
         )
-        safe_unlink(staged_path)
         if delete_source:
-            safe_unlink(source_path, parents_root=self._settings.destination)
+            self._move_to_manual_review(staged_path, reason="Kollision (anderer Song am Zielpfad)")
+        else:
+            safe_unlink(staged_path)
         return False
 
     async def _delete_old_copies(self, old_paths: list[Path] | None) -> None:
@@ -928,7 +942,13 @@ class FileProcessor:
             await self._process_file(proc_path)
         except Exception:
             self._log.exception("Failed to process %s", proc_path.name)
-            self._cleanup_file(proc_path)
+            # Deletion-Policy: unerwarteter Fehler ist kein erlaubter Löschgrund.
+            # Die Datei kann noch im Inbox (.processing) oder im work_dir liegen
+            # (ggf. bereits umbenannt) — überall aufbewahren.
+            for cand in [proc_path, *self._settings.work_dir.glob(f"{proc_path.stem}*")]:
+                if cand.exists():
+                    self._move_to_manual_review(cand, reason="unerwarteter Fehler")
+                    break
 
     # ── helpers ──
 
@@ -943,7 +963,32 @@ class FileProcessor:
         except OSError:
             self._log.exception("Failed to move %s to temp", path)
 
-    def _cleanup_file(self, path: Path) -> None:
+    def _move_to_manual_review(self, path: Path, *, reason: str) -> None:
+        """Bewahrt eine Datei auf, die NICHT gelöscht werden darf (Deletion-Policy).
+
+        Nicht löschbar = kein erlaubter Löschgrund (zu niedriger/fehlender Score,
+        korrupt, bessere Version im Ziel). Solche Dateien landen in
+        ``work_dir/manual_review/`` — sie werden weder gelöscht noch automatisch
+        erneut verarbeitet.
+        """
+        self._manual_review_dir.mkdir(parents=True, exist_ok=True)
+        dest = self._manual_review_dir / path.name
+        if dest.name.endswith(".processing"):
+            # "song.processing" → "song" (nur das angehängte Suffix entfernen)
+            dest = dest.with_name(dest.name.removesuffix(".processing"))
+        if dest.suffix != ".mp3":
+            dest = dest.with_name(dest.name + ".mp3")
+        if dest.exists():
+            dest = dest.with_name(f"{dest.stem}-{uuid.uuid4().hex[:8]}{dest.suffix}")
+        try:
+            shutil.move(str(path), str(dest))
+            self._log.info("[KEEP] %s → manual_review/ — Grund: %s", path.name, reason)
+        except OSError:
+            self._log.exception("Failed to move %s to manual_review", path)
+
+    def _cleanup_file(self, path: Path, *, reason: RejectReason | None = None) -> None:
+        if reason is not None:
+            self._log.info("[DELETE] %s — Grund: %s", path.name, reason.value)
         safe_unlink(path)
 
     # ── Hauptverarbeitungsschritte ──
@@ -957,10 +1002,10 @@ class FileProcessor:
             return work_path
         except OSError:
             self._log.error(
-                "[DELETE] %s — Grund: Verschieben ins work_dir fehlgeschlagen",
+                "[KEEP] %s — Grund: Verschieben ins work_dir fehlgeschlagen (Datei aufbewahrt)",
                 proc_path.name,
             )
-            self._cleanup_file(proc_path)
+            self._move_to_manual_review(proc_path, reason="Verschieben ins work_dir fehlgeschlagen")
             return None
 
     async def _fingerprint_and_validate(self, work_path: Path) -> FingerprintResult | None:
@@ -969,7 +1014,7 @@ class FileProcessor:
             result = await self._fingerprint.fingerprint(work_path)
         except NonRetriableFingerprintError:
             self._log.warning("[DELETE] %s — Grund: Datei korrupt/nicht lesbar", work_path.name)
-            self._cleanup_file(work_path)
+            self._cleanup_file(work_path, reason=RejectReason.CORRUPT)
             return None
         except FingerprintError:
             self._log.warning(
@@ -981,7 +1026,7 @@ class FileProcessor:
 
         if result is None:
             self._log.info("[DELETE] %s — Grund: kein AcoustID-Treffer", work_path.name)
-            self._cleanup_file(work_path)
+            self._cleanup_file(work_path, reason=RejectReason.SCORE_BELOW_MIN)
             return None
 
         if result.score < self._settings.acoustid_min_score:
@@ -991,7 +1036,7 @@ class FileProcessor:
                 result.score,
                 self._settings.acoustid_min_score,
             )
-            self._cleanup_file(work_path)
+            self._cleanup_file(work_path, reason=RejectReason.SCORE_BELOW_MIN)
             return None
 
         return result
@@ -1056,7 +1101,7 @@ class FileProcessor:
         old_paths sind weitere Katalog-Kopien desselben Songs, die NACH erfolgreichem
         Einsortieren gelöscht werden (siehe _delete_old_copies). Es wird hier bewusst
         NICHTS gelöscht — sonst gehen Duplikat-Kopien verloren, wenn die neue Datei
-        später doch verworfen wird (unpopular / Tag-Write-Fehler).
+        später doch verworfen wird (Tag-Write-Fehler).
 
         Der Zielpfad-Move + die Pfad-Duplikat-Erkennung (gleicher Zielpfad)
         übernimmt :meth:`_finalize_and_move` — hier wird nur die Katalog-Abfrage
@@ -1244,6 +1289,17 @@ class FileProcessor:
             self._log.debug("[%s] Katalog-Abfrage fehlgeschlagen", self._name)
             return False
         for ev in existing:
+            candidate = Path(ev.file_path)
+            if not candidate.exists():
+                # Verwaister DB-Eintrag (Datei fehlt) — bereinigen, statt die
+                # neue Datei wegen eines Phantom-Eintrags zu löschen.
+                self._log.info(
+                    "[%s] Verwaister Katalog-Eintrag (Datei fehlt) — bereinige: %s",
+                    self._name,
+                    ev.file_path,
+                )
+                await self._catalog.remove(ev.file_path)
+                continue
             if not is_better_version(
                 result.score,
                 None,
@@ -1277,30 +1333,32 @@ class FileProcessor:
         result: FingerprintResult,
         work_path: Path,
     ) -> tuple[DeezerData | None, bool, bool]:
-        """Stufe B: Deezer-Call + Popularitäts-Reject VOR den teuren Anreicherungs-Calls.
+        """Stufe B: Deezer-Call für Metadaten + Popularitäts-Information.
 
-        Returns (deezer_data, attempted, rejected). ``rejected=True`` = Datei verwerfen
-        (unpopular oder nicht auf Deezer). Netzwerkfehler → nicht verwerfen.
+        Returns (deezer_data, attempted, rejected). Seit der Deletion-Policy
+        ist ``rejected`` IMMER ``False`` — der Deezer-Rank wird nur noch als
+        Metadaten/Advisory geführt, nicht mehr als Löschgrund.
         """
         if self._settings.min_popularity_rank <= 0:
             return None, False, False
         deezer_data, attempted = await self._popularity_fetch(result)
         if attempted and deezer_data is None:
-            self._log.warning("[%s] Deleted unknown track (not on Deezer): %s", self._name, work_path.name)
-            return None, attempted, True
+            self._log.warning(
+                "[KEEP] %s — Grund: nicht auf Deezer (Popularität wird nicht mehr gelöscht)",
+                work_path.name,
+            )
+            return None, attempted, False
         if deezer_data is not None:
             rank = deezer_data.rank
             if rank is None:
                 self._log.debug("[%s] Deezer treffer ohne rank? Behalte: %s", self._name, work_path.name)
             elif rank < self._settings.min_popularity_rank:
                 self._log.warning(
-                    "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
-                    self._name,
+                    "[KEEP] %s — Grund: rank=%d < min=%d (Popularität wird nicht mehr gelöscht)",
+                    work_path.name,
                     rank,
                     self._settings.min_popularity_rank,
-                    work_path.name,
                 )
-                return deezer_data, attempted, True
         return deezer_data, attempted, False
 
     async def _process_file(self, proc_path: Path) -> None:
@@ -1316,15 +1374,13 @@ class FileProcessor:
         # Wiederholungen desselben Songs (gleiche recording_id, nicht besser) werden
         # sofort verworfen — MB/iTunes/Deezer/LRCLib/Cover werden gar nicht erst aufgerufen.
         if await self._catalog_early_reject(result, work_path):
-            self._cleanup_file(work_path)
+            self._cleanup_file(work_path, reason=RejectReason.BETTER_VERSION_EXISTS)
             return
 
-        # ── Stufe B: Popularitäts-Reject (nur 1 Deezer-Call) ──
-        # Unpopular/unbekannte Dateien verwerfen, BEVOR MB/iTunes/LRCLib/CAA laufen.
-        deezer_early, deezer_attempted, rejected = await self._early_popularity_check(result, work_path)
-        if rejected:
-            self._cleanup_file(work_path)
-            return
+        # ── Stufe B: Deezer-Vorab-Call (Advisory; Deletion-Policy: KEIN Löschen) ──
+        # Der Deezer-Call wird hier einmal gemacht und in _collect_metadata
+        # wiederverwendet. Unpopular/unbekannte Dateien werden aufbewahrt.
+        deezer_early, deezer_attempted, _ = await self._early_popularity_check(result, work_path)
 
         # ── Phase 3+4: Parallele Anreicherung + MB-Korrektur ──
         track_pre = TrackInfo(
@@ -1371,48 +1427,44 @@ class FileProcessor:
             work_path,
         )
         if final_path is None:  # bestehende Datei hat besseren Score
-            self._cleanup_file(work_path)
+            self._cleanup_file(work_path, reason=RejectReason.BETTER_VERSION_EXISTS)
             return
 
         # ── Phase 6: .untested → .mp3 umbenennen ──
         stage_path = _strip_untested_suffix(work_path, self._log, self._name, on_fail="")
         if stage_path is None:
-            self._cleanup_file(work_path)
+            # Umbenennen fehlgeschlagen (Ziel existiert) — Deletion-Policy: kein
+            # erlaubter Löschgrund, Datei aufbewahren statt löschen.
+            self._move_to_manual_review(
+                work_path,
+                reason="Umbenennen .untested → .mp3 fehlgeschlagen",
+            )
             return
 
-        # ── Phase 7: Popularitäts-Prüfung (Deezer-Rank) ──
-        if self._settings.min_popularity_rank > 0 and (result.artist or result.title):
+        # ── Phase 7: Popularitäts-Information (Deletion-Policy: KEIN Löschen) ──
+        # Der Deezer-Rank wird nur noch als Metadaten/Log geführt. Unpopular oder
+        # auf Deezer unbekannte Dateien werden aufbewahrt.
+        if self._settings.min_popularity_rank > 0:
             if deezer_attempted and deezer_data is None:
-                # Deezer angerufen, 0 Treffer → "nicht auf Deezer" → löschen
-                safe_unlink(stage_path)
                 self._log.warning(
-                    "[%s] Deleted unknown track (not on Deezer): %s",
-                    self._name,
+                    "[KEEP] %s — Grund: nicht auf Deezer (aufbewahrt)",
                     stage_path.name,
                 )
-                return
-            if not deezer_attempted:
-                # Deezer call fehlgeschlagen (API down) oder Provider fehlt → nicht löschen
-                self._log.debug("[%s] Skip popularity check (Deezer not attempted)", self._name)
             elif deezer_data is not None:
                 rank = deezer_data.rank
                 if rank is None:
-                    # Sollte nicht passieren, aber defensiv
-                    self._log.warning(
+                    self._log.debug(
                         "[%s] Deezer treffer ohne rank? Behalte: %s",
                         self._name,
                         stage_path.name,
                     )
                 elif rank < self._settings.min_popularity_rank:
-                    safe_unlink(stage_path)
                     self._log.warning(
-                        "[%s] Deleted unpopular track (rank=%d < min=%d): %s",
-                        self._name,
+                        "[KEEP] %s — Grund: rank=%d < min=%d (aufbewahrt)",
+                        stage_path.name,
                         rank,
                         self._settings.min_popularity_rank,
-                        stage_path.name,
                     )
-                    return
                 else:
                     self._log.info(
                         "[%s] Popularity rank OK — %s / %s = %d",
