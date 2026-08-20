@@ -17,7 +17,7 @@
   // werden verworfen. Radio-Rips (komprimiert, mit Jingle/Moderation) scoren
   // oft nur 0.70–0.84 — korrekte Treffer gingen bei 0.85 verloren. 0.75 ist
   // ein guter Kompromiss aus Trefferquote und Fehlmatch-Schutz.
-  "acoustid_min_score": 0.90,
+  "acoustid_min_score": 0.75,
 
   // ── Popularität ────────────────────────────────────────────────────────────
   //

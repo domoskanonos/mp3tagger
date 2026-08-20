@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -412,6 +413,10 @@ class TestAcoustidFingerprintProvider:
             result = await provider.fingerprint(mp3)
         assert result is None
 
+    @pytest.mark.skipif(
+        shutil.which("fpcalc") is None,
+        reason="fpcalc (chromaprint) fehlt — Segment-Fallback kann nicht getestet werden",
+    )
     async def test_segment_fallback_rescues_polluted_file(self, tmp_path: Path) -> None:
         """Voll-Lookup (erste 120s) liefert 0, aber ein späteres 30s-Fenster
         matcht — Fenster-Verschmutzung durch Jingle/Moderation am Anfang."""

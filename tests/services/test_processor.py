@@ -632,9 +632,9 @@ class TestFinalizeAndMove:
         assert existing.exists()
         assert not src.exists()
         assert ok is False, "aufbewahrte Datei darf nicht als Erfolg gemeldet werden"
-        assert list(proc._manual_review_dir.glob("*.mp3")) == [
-            proc._manual_review_dir / "src.mp3"
-        ], "Kollisionsdatei muss in manual_review/ aufbewahrt werden"
+        assert list(proc._manual_review_dir.glob("*.mp3")) == [proc._manual_review_dir / "src.mp3"], (
+            "Kollisionsdatei muss in manual_review/ aufbewahrt werden"
+        )
 
     async def test_collision_keeps_library_file_when_delete_source_false(self, tmp_path: Path):
         """Bug 1: Enrich-Kollision darf die Bibliotheksdatei NIE löschen.
